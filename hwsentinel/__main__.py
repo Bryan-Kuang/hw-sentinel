@@ -55,7 +55,12 @@ def rtss_text(alerts: list[Alert], markup: bool) -> str:
             lines.append(f"<C0={colour}><C0>{a.title}<C>  {a.detail}")
         else:
             lines.append(f"{a.title}  {a.detail}")
-    return "\n".join(lines)
+    if not lines:
+        return ""
+    # Lead with a newline so the alert starts on its own row. RTSS composes every
+    # client's text into one block, so without this we overprint whatever it is
+    # already showing — its own FPS counter sits in exactly that spot by default.
+    return "\n" + "\n".join(lines)
 
 
 class Supervisor:

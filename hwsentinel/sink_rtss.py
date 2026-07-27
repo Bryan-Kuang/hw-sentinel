@@ -238,8 +238,10 @@ class RtssSink:
             addr = self._entry_addr(slot)
             self._write_str(addr + _OSD_TEXT_OFF, _OSD_TEXT_LEN, text)
             if self._header.dwOSDEntrySize >= _OSD_EX_OFF + _OSD_EX_LEN:
-                # Newer RTSS prefers szOSDEx; write both so either is correct.
-                self._write_str(addr + _OSD_EX_OFF, _OSD_EX_LEN, text)
+                # RTSS renders szOSD and szOSDEx *concatenated*, not one or the other,
+                # so writing the text to both prints the alert twice. szOSD exists in
+                # every version, so that is the one to use; szOSDEx must be blanked.
+                self._write_str(addr + _OSD_EX_OFF, _OSD_EX_LEN, "")
             # Bumping the frame counter is what makes RTSS repaint.
             ctypes.c_uint32.from_address(self._view + _Header.dwOSDFrame.offset).value = (
                 self._header.dwOSDFrame + 1
