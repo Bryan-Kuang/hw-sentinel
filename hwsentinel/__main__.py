@@ -57,9 +57,11 @@ def rtss_text(alerts: list[Alert], markup: bool) -> str:
             lines.append(f"{a.title}  {a.detail}")
     if not lines:
         return ""
-    # Lead with a newline so the alert starts on its own row. RTSS composes every
-    # client's text into one block, so without this we overprint whatever it is
-    # already showing — its own FPS counter sits in exactly that spot by default.
+    # Lead with a newline so the alert starts on its own row rather than the very top
+    # of the screen, where other overlays (Steam's FPS counter, RTSS's own stats) draw
+    # by default. They are separate renderers that know nothing about each other, so
+    # sharing row 0 just means whichever draws last hides the other — in practice it
+    # clipped the start of the alert title.
     return "\n" + "\n".join(lines)
 
 
