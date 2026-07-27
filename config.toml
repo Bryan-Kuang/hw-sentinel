@@ -1,0 +1,176 @@
+# hw-sentinel configuration
+#
+# The [sensors] patterns below are STARTING GUESSES. Run
+#     py -3 -m hwsentinel discover
+# and correct any that don't resolve. A pattern only needs to be unique — a path
+# suffix or substring is matched, so "temperatures/gpu-core" is enough.
+# Then confirm everything resolves with:
+#     py -3 -m hwsentinel doctor
+
+[source]
+url = "http://localhost:8085/data.json"
+poll_interval = 1.0
+timeout = 2.0
+
+[card]
+enabled = true
+position = "right-center"   # right-top | right-center | right-bottom
+margin_x = 24
+margin_y = 24
+width = 360
+height = 96
+gap = 8
+slide_ms = 180
+snooze_minutes = 15         # click a card to silence that rule this long
+suppress_in_game = true     # hide the card when RTSS is showing the alert instead
+
+[rtss]
+enabled = true
+owner = "hw-sentinel"
+markup = true               # set false if RTSS shows the colour tags literally
+
+[sound]
+enabled = true
+critical_only = false
+min_interval = 30.0         # seconds before the same rule may sound again
+warn_wav = "assets/warn.wav"
+critical_wav = "assets/critical.wav"
+
+[log]
+enabled = true
+path = "state/events.jsonl"
+
+
+# --- sensor aliases -----------------------------------------------------------
+# alias = "pattern matched against LibreHardwareMonitor sensor paths"
+
+[sensors]
+# Verified against LibreHardwareMonitor 0.9.6 on this machine (Zen 5 + RDNA 4).
+cpu_tctl        = "amd-ryzen-7-9800x3d/temperatures/core-tctl-tdie"
+
+# Measured Vcore from the board's Nuvoton SuperIO. The CPU also exposes per-core
+# "core-N-vid" sensors, but those are the *requested* VID, not the delivered rail.
+cpu_core_volts  = "nuvoton-nct6701d/voltages/vcore"
+
+# INFERRED — confirm this once against your BIOS / Ryzen Master SoC voltage.
+# LHM 0.9.6 exposes no explicit VDDCR_SOC sensor for the 9800X3D. On AM5 the iGPU
+# lives in the IOD powered by the SoC rail, and this sensor reads ~1.24 V, which is a
+# typical EXPO SoC voltage. If your BIOS disagrees, set rules.cpu_soc_voltage.enabled
+# = false rather than trusting the wrong rail for a safety alert.
+cpu_soc_volts   = "amd-radeon-tm-graphics/voltages/gpu-soc"
+
+# Qualified by GPU name: the integrated "AMD Radeon(TM) Graphics" also has a
+# voltages/gpu-core, and an unqualified pattern is (correctly) rejected as ambiguous.
+gpu_core_temp   = "amd-radeon-rx-9070-xt/temperatures/gpu-core"
+gpu_hotspot     = "amd-radeon-rx-9070-xt/temperatures/gpu-hot-spot"
+gpu_core_volts  = "amd-radeon-rx-9070-xt/voltages/gpu-core"
+
+
+# --- rules --------------------------------------------------------------------
+# op/value  trip point            clear_at     hysteresis, must be on the safe side
+# dwell     seconds over the line before tripping (kills transient spikes)
+# cooldown  minimum seconds between one clear and the next trip
+
+[rules.cpu_temp]
+enabled     = true
+title       = "CPU running hot"
+label       = "Tctl"
+sensor      = "cpu_tctl"
+unit        = "°C"
+op          = ">"
+value       = 88
+clear_at    = 83
+dwell       = 10
+clear_dwell = 15
+cooldown    = 60
+severity    = "warn"
+
+# The AM5 SoC-overvolt failure mode. Worth knowing about immediately.
+[rules.cpu_soc_voltage]
+enabled     = true
+title       = "CPU SoC voltage too high"
+label       = "SoC"
+sensor      = "cpu_soc_volts"
+unit        = "V"
+op          = ">"
+value       = 1.30
+clear_at    = 1.25
+dwell       = 5
+clear_dwell = 10
+cooldown    = 120
+severity    = "critical"
+
+[rules.cpu_core_voltage]
+enabled     = true
+title       = "CPU core voltage high"
+label       = "Vcore"
+sensor      = "cpu_core_volts"
+unit        = "V"
+op          = ">"
+value       = 1.40
+clear_at    = 1.35
+dwell       = 5
+clear_dwell = 10
+cooldown    = 120
+severity    = "warn"
+
+[rules.gpu_hotspot]
+enabled     = true
+title       = "GPU hot spot critical"
+label       = "Junction"
+sensor      = "gpu_hotspot"
+unit        = "°C"
+op          = ">"
+value       = 100
+clear_at    = 92
+dwell       = 10
+clear_dwell = 15
+cooldown    = 60
+severity    = "critical"
+
+[rules.gpu_temp]
+enabled     = true
+title       = "GPU running hot"
+label       = "GPU"
+sensor      = "gpu_core_temp"
+unit        = "°C"
+op          = ">"
+value       = 90
+clear_at    = 84
+dwell       = 10
+clear_dwell = 15
+cooldown    = 60
+severity    = "warn"
+
+# A widening gap between junction and edge is the early sign of degraded thermal
+# paste or poor cold-plate contact. Long dwell: this is a trend, not an event.
+[rules.gpu_hotspot_delta]
+enabled     = true
+title       = "GPU hot spot delta widening"
+label       = "Delta"
+expr        = "gpu_hotspot - gpu_core_temp"
+unit        = "°C"
+op          = ">"
+value       = 25
+clear_at    = 20
+dwell       = 30
+clear_dwell = 30
+cooldown    = 300
+severity    = "warn"
+
+# RDNA 4 core voltage peaks around 1.0-1.1 V under load and idles near 0.5 V, so the
+# trip point sits just above the normal ceiling. An earlier 1.20 V setting was above
+# anything the card can actually reach, which made the rule inert.
+[rules.gpu_core_voltage]
+enabled     = true
+title       = "GPU core voltage high"
+label       = "GPU V"
+sensor      = "gpu_core_volts"
+unit        = "V"
+op          = ">"
+value       = 1.10
+clear_at    = 1.05
+dwell       = 5
+clear_dwell = 10
+cooldown    = 120
+severity    = "warn"

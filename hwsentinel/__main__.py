@@ -1,0 +1,361 @@
+"""hw-sentinel CLI: doctor | discover | run | test."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import queue
+import signal
+import sys
+import threading
+import time
+import tkinter as tk
+from pathlib import Path
+
+from . import APP_NAME, __version__
+from .config import Config, ConfigError, load
+from .rules import Alert, Event, EventKind, RuleEngine, expr_aliases
+from .sink_card import ACCENT, CardManager
+from .sink_log import LogSink
+from .sink_rtss import RtssSink
+from .sink_sound import SoundSink
+from .source_lhm import LhmSource, SourceError, grouped
+
+DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.toml"
+
+
+def say(*args) -> None:
+    """print() that survives being run under pythonw, where stdout may be absent.
+
+    Flushed: this process does ctypes work against shared memory, and buffered output
+    is lost if that ever faults — which makes the crash far harder to place.
+    """
+    try:
+        print(*args, flush=True)
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def set_dpi_aware() -> None:
+    """Without this the card renders blurry on a scaled display."""
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
+def rtss_text(alerts: list[Alert], markup: bool) -> str:
+    lines = []
+    for a in sorted(alerts, key=lambda x: (x.severity != "critical", x.key)):
+        if markup:
+            colour = ACCENT.get(a.severity, ACCENT["warn"]).lstrip("#")
+            lines.append(f"<C0={colour}><C0>{a.title}<C>  {a.detail}")
+        else:
+            lines.append(f"{a.title}  {a.detail}")
+    return "\n".join(lines)
+
+
+class Supervisor:
+    """Owns the poll thread and fans events out to the sinks on the tk thread."""
+
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self.source = LhmSource(cfg.source.url, cfg.source.timeout)
+        self.engine = RuleEngine(cfg)
+        self.sound = SoundSink(cfg)
+        self.log = LogSink(cfg)
+        self.rtss = RtssSink(cfg.rtss)
+        self.queue: queue.Queue = queue.Queue()
+        self.stop = threading.Event()
+        self.source_error = ""
+        self._last_source_error = ""
+
+        set_dpi_aware()
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.cards = CardManager(cfg.card, self.root, on_snooze=self._snooze)
+
+    def _snooze(self, key: str) -> None:
+        self.engine.snooze(key, self.cfg.card.snooze_minutes)
+        say(f"snoozed {key} for {self.cfg.card.snooze_minutes} min")
+
+    # -- background polling ---------------------------------------------------
+
+    def poll_loop(self) -> None:
+        while not self.stop.is_set():
+            started = time.time()
+            try:
+                readings = self.source.poll()
+                events = self.engine.update(readings)
+                self.queue.put(("ok", events, self.engine.active))
+            except SourceError as exc:
+                self.queue.put(("error", str(exc), []))
+            self.stop.wait(max(0.05, self.cfg.source.poll_interval - (time.time() - started)))
+
+    # -- tk-thread pump -------------------------------------------------------
+
+    def pump(self) -> None:
+        if self.stop.is_set():
+            self.shutdown()
+            return
+
+        alerts: list[Alert] | None = None
+        try:
+            while True:
+                status, payload, active = self.queue.get_nowait()
+                if status == "error":
+                    self.source_error = payload
+                    if payload != self._last_source_error:
+                        say(f"[source] {payload}")
+                        self._last_source_error = payload
+                    alerts = []
+                else:
+                    self.source_error = ""
+                    self._last_source_error = ""
+                    for event in payload:
+                        self._on_event(event)
+                    alerts = active
+        except queue.Empty:
+            pass
+
+        if alerts is not None:
+            self._render(alerts)
+        self.root.after(100, self.pump)
+
+    def _on_event(self, event: Event) -> None:
+        self.log.write(event)
+        if event.kind is EventKind.TRIP:
+            a = event.alert
+            say(f"[TRIP {a.severity}] {a.title} — {a.detail}")
+            self.sound.play(a.severity, a.key)
+        elif event.kind is EventKind.CLEAR:
+            say(f"[clear] {event.alert.key}")
+
+    def _render(self, alerts: list[Alert]) -> None:
+        shown_in_game = False
+        if self.cfg.rtss.enabled:
+            self.rtss.ensure_attached()
+            if self.rtss.attached:
+                in_game = self.rtss.in_game()
+                if alerts and in_game:
+                    shown_in_game = self.rtss.show(rtss_text(alerts, self.cfg.rtss.markup))
+                else:
+                    self.rtss.clear()
+
+        # Suppress the desktop card only when the alert is definitely visible in-game,
+        # so a failed RTSS write can never leave the alert invisible everywhere.
+        self.cards.update(alerts, suppressed=shown_in_game and self.cfg.card.suppress_in_game)
+
+    def shutdown(self) -> None:
+        self.stop.set()
+        try:
+            self.rtss.close()
+        except OSError:
+            pass
+        self.cards.destroy_all()
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
+    def run(self) -> int:
+        thread = threading.Thread(target=self.poll_loop, name="poll", daemon=True)
+        thread.start()
+
+        def on_signal(_sig, _frm):
+            self.stop.set()
+
+        try:
+            signal.signal(signal.SIGINT, on_signal)
+            signal.signal(signal.SIGTERM, on_signal)
+        except ValueError:
+            pass
+
+        say(f"{APP_NAME} {__version__} running — {len(self.cfg.enabled_rules)} rules, "
+            f"polling every {self.cfg.source.poll_interval:g}s. Ctrl+C to stop.")
+        self.root.after(100, self.pump)
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.shutdown()
+        return 0
+
+
+# -- subcommands --------------------------------------------------------------
+
+
+def cmd_discover(cfg: Config, args) -> int:
+    source = LhmSource(cfg.source.url, cfg.source.timeout)
+    try:
+        readings = source.poll()
+    except SourceError as exc:
+        say(f"error: {exc}")
+        return 1
+
+    needle = (args.filter or "").lower()
+    shown = 0
+    for hardware, items in grouped(readings):
+        rows = [r for r in items if not needle or needle in r.path.lower() or needle in r.name.lower()]
+        if not rows:
+            continue
+        say(f"\n=== {hardware} ===")
+        for r in rows:
+            say(f"  {r.value:>10.2f} {r.unit:<4}  {r.path}")
+            shown += 1
+    say(f"\n{shown} sensor(s). Copy a path into the [sensors] table of config.toml;")
+    say("a unique suffix or substring is enough, the full path is not required.")
+    return 0
+
+
+def cmd_doctor(cfg: Config, args) -> int:
+    ok = True
+    say(f"{APP_NAME} {__version__}\nconfig: {args.config}\n")
+
+    say(f"[1/5] LibreHardwareMonitor  {cfg.source.url}")
+    readings = {}
+    try:
+        readings = LhmSource(cfg.source.url, cfg.source.timeout).poll()
+        say(f"      OK — {len(readings)} sensors")
+        zeros = sum(1 for r in readings.values() if r.value == 0.0)
+        if zeros > len(readings) * 0.6:
+            say(f"      WARNING: {zeros}/{len(readings)} sensors read 0.00 — LHM is probably not elevated")
+    except SourceError as exc:
+        say(f"      FAIL — {exc}")
+        ok = False
+
+    say("\n[2/5] Sensors referenced by rules")
+    if readings:
+        engine = RuleEngine(cfg)
+        for rule in cfg.enabled_rules:
+            aliases = expr_aliases(rule.expr) if rule.expr else [rule.sensor]
+            try:
+                value, unit = engine.measure(rule, readings)
+                say(f"      OK   {rule.key:<22} = {value:.2f}{unit}  ({', '.join(aliases)})")
+            except SourceError as exc:
+                say(f"      FAIL {rule.key:<22} {exc}")
+                ok = False
+    else:
+        say("      skipped (no sensor data)")
+
+    say("\n[3/5] RTSS shared memory")
+    rtss = RtssSink(cfg.rtss)
+    if not cfg.rtss.enabled:
+        say("      disabled in config")
+    elif rtss.attach():
+        say(f"      OK — shared memory v{rtss.version}, in-game: {rtss.in_game()}")
+        rtss.close()
+    else:
+        say(f"      FAIL — {rtss.last_error}")
+        say("      (in-game alerts will not work; desktop card and sound still will)")
+        ok = False
+
+    say("\n[4/5] Alert sounds")
+    sound = SoundSink(cfg)
+    missing = sound.missing()
+    if missing:
+        say("      FAIL — missing: " + ", ".join(str(p) for p in missing))
+        say("      run: py -3 generate_assets.py")
+        ok = False
+    else:
+        say("      OK — playing warn chime")
+        sound.play("warn", "doctor")
+        time.sleep(1.0)
+
+    say("\n[5/5] Overlay window")
+    try:
+        set_dpi_aware()
+        root = tk.Tk()
+        root.withdraw()
+        say(f"      OK — screen {root.winfo_screenwidth()}x{root.winfo_screenheight()}")
+        root.destroy()
+    except tk.TclError as exc:
+        say(f"      FAIL — {exc}")
+        ok = False
+
+    say("\n" + ("all checks passed" if ok else "some checks failed (see above)"))
+    return 0 if ok else 1
+
+
+def cmd_test(cfg: Config, args) -> int:
+    rule = next((r for r in cfg.rules if r.key == args.rule), None)
+    if rule is None:
+        say(f"unknown rule '{args.rule}'. Available: " + ", ".join(r.key for r in cfg.rules))
+        return 1
+
+    sup = Supervisor(cfg)
+    started = time.time()
+    # Overshoot proportionally: a fixed offset reads as nonsense on a voltage rule
+    # (1.30 V + 2 = 3.3 V), where 5% past the threshold looks like a real reading.
+    margin = max(abs(rule.value) * 0.05, 0.02)
+    alert = Alert(
+        key=rule.key,
+        title=rule.title,
+        severity=rule.severity,
+        detail="",
+        value=rule.value + (margin if rule.op == ">" else -margin),
+        unit=rule.unit or "",
+        since=started,
+    )
+    sup.sound.play(alert.severity, alert.key)
+    say(f"simulating '{rule.key}' ({rule.severity}) for {args.seconds}s — "
+        f"RTSS attached: {sup.rtss.ensure_attached()}")
+
+    def tick() -> None:
+        held = int(time.time() - started)
+        if held >= args.seconds:
+            sup.stop.set()
+            sup.shutdown()
+            return
+        arrow = "over" if rule.op == ">" else "under"
+        alert.detail = f"{rule.label} {alert.value:.1f}{alert.unit} · {arrow} {rule.value:g}{alert.unit} for {held}s"
+        sup._render([alert])
+        sup.root.after(250, tick)
+
+    sup.root.after(10, tick)
+    try:
+        sup.root.mainloop()
+    finally:
+        sup.shutdown()
+    say("done")
+    return 0
+
+
+def cmd_run(cfg: Config, args) -> int:
+    return Supervisor(cfg).run()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hwsentinel", description=__doc__)
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="path to config.toml")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("run", help="monitor continuously and alert on abnormal readings")
+    sub.add_parser("doctor", help="check every dependency and config sensor")
+
+    p_discover = sub.add_parser("discover", help="list every sensor LHM exposes")
+    p_discover.add_argument("--filter", help="only show sensors matching this text")
+
+    p_test = sub.add_parser("test", help="force an alert to verify the sinks")
+    p_test.add_argument("--rule", required=True, help="rule key to simulate")
+    p_test.add_argument("--seconds", type=int, default=10)
+
+    args = parser.parse_args(argv)
+
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        say(f"config error: {exc}")
+        return 2
+
+    return {"run": cmd_run, "doctor": cmd_doctor, "discover": cmd_discover, "test": cmd_test}[
+        args.command
+    ](cfg, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
