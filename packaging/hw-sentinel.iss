@@ -70,15 +70,15 @@ Name: "{group}\List all sensors"; Filename: "{app}\hw-sentinel.cmd"; Parameters:
 Name: "{group}\Documentation"; Filename: "{app}\README.md"
 
 [Run]
+; Registers the task AND starts it. Starting matters most on an upgrade: re-registering
+; the task terminates the running monitor, so without this an upgrade would silently
+; leave monitoring switched off until the next logon.
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -InstallDir ""{app}"" -Silent -NoStart"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -InstallDir ""{app}"" -Silent"; \
     StatusMsg: "Registering hw-sentinel to start at logon..."; Flags: runhidden waituntilterminated
 Filename: "{app}\hw-sentinel.cmd"; Parameters: "doctor"; \
     Description: "Check that hw-sentinel can read your sensors"; \
-    Flags: postinstall shellexec skipifsilent
-Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Start-ScheduledTask -TaskName 'hw-sentinel'"""; \
-    Description: "Start monitoring now"; Flags: postinstall runhidden skipifsilent
+    Flags: postinstall shellexec skipifsilent unchecked
 
 [UninstallRun]
 ; Must run before the files disappear: it stops the task and the monitor, which would
@@ -86,12 +86,9 @@ Filename: "powershell.exe"; \
 Filename: "powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -Uninstall -Silent -InstallDir ""{app}"""; \
     Flags: runhidden waituntilterminated; RunOnceId: "RemoveTask"
-; Python writes bytecode caches and LibreHardwareMonitor rewrites its settings on exit.
-; None of it is tracked by the installer, so without this sweep the install directory
-; survives an uninstall.
-Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-ChildItem -LiteralPath '{app}' -Recurse -Directory -Filter __pycache__ -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath '{app}\runtime\lhm\LibreHardwareMonitor.config' -Force -ErrorAction SilentlyContinue"""; \
-    Flags: runhidden waituntilterminated; RunOnceId: "SweepGenerated"
+; The sweep of run-time generated files now lives inside install.ps1 -Uninstall above,
+; where it can be scoped to our own subfolders and skipped entirely if the install
+; directory turns out not to contain this program.
 
 [UninstallDelete]
 ; These two trees are entirely ours and contain nothing a user would author, so remove
@@ -182,6 +179,26 @@ begin
       DownloadPage.Hide;
     end;
   end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  Script: String;
+begin
+  Result := '';
+  // Runs before a single file is copied. On an upgrade the previous monitor is still
+  // running out of the install folder and holding its interpreter DLL open, which would
+  // otherwise make Inno either fail the copy or defer it to a reboot. Stopping it here
+  // means an upgrade replaces everything cleanly; the Run section then restarts it.
+  // (Line comments, not braces: a brace comment ends at the first closing brace, so an
+  // Inno constant written inside one would terminate it early.)
+  Script := ExpandConstant('{app}\install.ps1');
+  if FileExists(Script) then
+    Exec('powershell.exe',
+      '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -Uninstall -Silent -InstallDir "' +
+      ExpandConstant('{app}') + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

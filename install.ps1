@@ -60,6 +60,16 @@ if ($Uninstall) {
     }
     Remove-TaskIfPresent $TaskName
 
+    # Everything below deletes files and kills processes by folder. If someone installed
+    # into a folder they also keep other things in, that would reach beyond us - so do
+    # none of it unless the folder actually contains this program.
+    $marker = Join-Path $InstallDir "hwsentinel\__main__.py"
+    if (-not (Test-Path $marker)) {
+        Say "'$InstallDir' does not look like a hw-sentinel install (no $marker)."
+        Say "Skipping process and file cleanup so nothing outside this program is touched."
+        return
+    }
+
     # Stop anything still running out of the install folder: the monitor, and the
     # LibreHardwareMonitor / RTSS copies it launched. Matching on path means a
     # system-wide RTSS the user runs for other things is never touched.
@@ -83,7 +93,21 @@ if ($Uninstall) {
     }
     if ($mine) { Start-Sleep -Seconds 2 }
 
-    Say "`nautostart removed and processes stopped."
+    # Python writes bytecode caches and LibreHardwareMonitor rewrites its settings on
+    # exit. Neither is tracked by the installer, and leaving them behind blocks removal
+    # of the directories holding them. Scoped to our own two subfolders rather than
+    # sweeping the whole install directory, which may not be exclusively ours.
+    foreach ($sub in @("hwsentinel", "runtime")) {
+        $path = Join-Path $InstallDir $sub
+        if (Test-Path $path) {
+            Get-ChildItem $path -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Remove-Item (Join-Path $InstallDir "runtime\lhm\LibreHardwareMonitor.config") `
+        -Force -ErrorAction SilentlyContinue
+
+    Say "`nautostart removed, processes stopped, generated files cleaned."
     return
 }
 
