@@ -18,11 +18,50 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import winreg
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config
 from .sink_rtss import rtss_running
+
+_UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+
+
+def rtss_from_registry() -> Path | None:
+    """Where RTSS actually got installed, per its Add/Remove Programs entry.
+
+    Its installer lets the user choose any folder, so probing the default Program Files
+    paths misses a relocated install — and then nothing would launch it at logon.
+    """
+    for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+        try:
+            root = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, _UNINSTALL_KEY, 0, winreg.KEY_READ | view
+            )
+        except OSError:
+            continue
+        with root:
+            count = winreg.QueryInfoKey(root)[0]
+            for i in range(count):
+                try:
+                    with winreg.OpenKey(root, winreg.EnumKey(root, i)) as sub:
+                        name, _ = winreg.QueryValueEx(sub, "DisplayName")
+                        if "RivaTuner Statistics Server" not in str(name):
+                            continue
+                        try:
+                            location = str(winreg.QueryValueEx(sub, "InstallLocation")[0])
+                        except OSError:
+                            location = ""
+                        if not location:
+                            uninst = str(winreg.QueryValueEx(sub, "UninstallString")[0])
+                            location = str(Path(uninst.strip('"')).parent)
+                        exe = Path(location) / "RTSS.exe"
+                        if exe.is_file():
+                            return exe
+                except OSError:
+                    continue
+    return None
 
 
 @dataclass
@@ -59,8 +98,10 @@ class DepSupervisor:
             ]
         else:
             explicit = self.cfg.deps.rtss_path
+            from_registry = rtss_from_registry()
             paths = [
                 program / "runtime" / "rtss" / "RTSS.exe",
+                *([from_registry] if from_registry else []),
                 Path(r"C:\Program Files (x86)\RivaTuner Statistics Server\RTSS.exe"),
                 Path(r"C:\Program Files\RivaTuner Statistics Server\RTSS.exe"),
             ]

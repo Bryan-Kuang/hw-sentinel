@@ -32,11 +32,31 @@ $ErrorActionPreference = "Continue"
 $lines = @()
 function Add-Line($m) { $script:lines += $m }
 
+function Get-RtssFromRegistry {
+    # RTSS's own installer lets the user choose any folder, so the default Program Files
+    # paths are a guess. Its Add/Remove Programs entry records where it actually went.
+    $keys = Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*, `
+                             HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* `
+                             -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -match 'RivaTuner Statistics Server' }
+    foreach ($k in $keys) {
+        $dir = $k.InstallLocation
+        if (-not $dir -and $k.UninstallString) {
+            # Fall back to the folder holding the uninstaller.
+            $dir = Split-Path ($k.UninstallString -replace '^"|"$', '') -Parent
+        }
+        if ($dir -and (Test-Path (Join-Path $dir "RTSS.exe"))) { return (Join-Path $dir "RTSS.exe") }
+    }
+    return $null
+}
+
 function Find-Rtss {
     if ($RtssDir) {
         $p = Join-Path $RtssDir "RTSS.exe"
         return $(if (Test-Path $p) { $p } else { $null })
     }
+    $fromReg = Get-RtssFromRegistry
+    if ($fromReg) { return $fromReg }
     foreach ($p in @("${env:ProgramFiles(x86)}\RivaTuner Statistics Server\RTSS.exe",
                      "$env:ProgramFiles\RivaTuner Statistics Server\RTSS.exe")) {
         if (Test-Path $p) { return $p }

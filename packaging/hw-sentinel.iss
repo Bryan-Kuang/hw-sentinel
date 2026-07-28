@@ -141,9 +141,43 @@ begin
     Result := False;
 end;
 
+function RtssFromRegistry(RootView: Integer): String;
+var
+  Names: TArrayOfString;
+  I: Integer;
+  Base, Display, Location, Uninst: String;
+begin
+  Result := '';
+  Base := 'Software\Microsoft\Windows\CurrentVersion\Uninstall';
+  if not RegGetSubkeyNames(RootView, Base, Names) then
+    Exit;
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    if not RegQueryStringValue(RootView, Base + '\' + Names[I], 'DisplayName', Display) then
+      Continue;
+    if Pos('RivaTuner Statistics Server', Display) = 0 then
+      Continue;
+    if not RegQueryStringValue(RootView, Base + '\' + Names[I], 'InstallLocation', Location) then
+      Location := '';
+    if Location = '' then
+      if RegQueryStringValue(RootView, Base + '\' + Names[I], 'UninstallString', Uninst) then
+        Location := ExtractFileDir(RemoveQuotes(Uninst));
+    if (Location <> '') and FileExists(AddBackslash(Location) + 'RTSS.exe') then
+    begin
+      Result := AddBackslash(Location) + 'RTSS.exe';
+      Exit;
+    end;
+  end;
+end;
+
 function RtssInstalled(): Boolean;
 begin
-  Result := FileExists(ExpandConstant('{commonpf32}\RivaTuner Statistics Server\RTSS.exe')) or
+  { RTSS's installer lets the user choose any folder, so its Add/Remove Programs entry
+    is the only reliable answer. Probing the default paths alone would keep offering to
+    install a copy the user already has somewhere else. }
+  Result := (RtssFromRegistry(HKLM32) <> '') or
+            (RtssFromRegistry(HKLM64) <> '') or
+            FileExists(ExpandConstant('{commonpf32}\RivaTuner Statistics Server\RTSS.exe')) or
             FileExists(ExpandConstant('{commonpf}\RivaTuner Statistics Server\RTSS.exe'));
 end;
 
@@ -306,7 +340,13 @@ begin
             'Settings > Apps.',
             mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
   begin
-    Uninst := ExpandConstant('{commonpf32}\RivaTuner Statistics Server\Uninstall.exe');
+    { Derive the uninstaller from wherever RTSS actually is, not a guessed path. }
+    Uninst := RtssFromRegistry(HKLM32);
+    if Uninst = '' then Uninst := RtssFromRegistry(HKLM64);
+    if Uninst <> '' then
+      Uninst := AddBackslash(ExtractFileDir(Uninst)) + 'Uninstall.exe'
+    else
+      Uninst := ExpandConstant('{commonpf32}\RivaTuner Statistics Server\Uninstall.exe');
     if not FileExists(Uninst) then
       Uninst := ExpandConstant('{commonpf}\RivaTuner Statistics Server\Uninstall.exe');
     if FileExists(Uninst) then

@@ -28,6 +28,20 @@ $ErrorActionPreference = "Continue"
 if (-not $WorkDir) { $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) "hw-sentinel-rtss" }
 
 function Find-Rtss {
+    # Ask Windows where RTSS actually is: its installer lets the user pick any folder,
+    # so checking only the default paths would miss it and report a successful install
+    # as a failure.
+    $keys = Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*, `
+                             HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* `
+                             -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -match 'RivaTuner Statistics Server' }
+    foreach ($k in $keys) {
+        $dir = $k.InstallLocation
+        if (-not $dir -and $k.UninstallString) {
+            $dir = Split-Path ($k.UninstallString -replace '^"|"$', '') -Parent
+        }
+        if ($dir -and (Test-Path (Join-Path $dir "RTSS.exe"))) { return (Join-Path $dir "RTSS.exe") }
+    }
     foreach ($p in @("${env:ProgramFiles(x86)}\RivaTuner Statistics Server\RTSS.exe",
                      "$env:ProgramFiles\RivaTuner Statistics Server\RTSS.exe")) {
         if (Test-Path $p) { return $p }
