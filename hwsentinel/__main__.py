@@ -174,9 +174,6 @@ class Supervisor:
             pass
 
     def run(self) -> int:
-        thread = threading.Thread(target=self.poll_loop, name="poll", daemon=True)
-        thread.start()
-
         def on_signal(_sig, _frm):
             self.stop.set()
 
@@ -186,9 +183,15 @@ class Supervisor:
         except ValueError:
             pass
 
+        # Dependencies first, and only then the poll thread. Starting the thread first
+        # raced: it polled before LibreHardwareMonitor existed, hit the failure path,
+        # and launched LHM — while this thread was launching it too. Two copies.
         say(f"{APP_NAME} {__version__} starting — bringing up dependencies...")
         for st in self.deps.start().values():
             say(f"  {st.name}: {st.describe()}")
+
+        thread = threading.Thread(target=self.poll_loop, name="poll", daemon=True)
+        thread.start()
 
         say(f"{APP_NAME} {__version__} running — {len(self.cfg.enabled_rules)} rules, "
             f"polling every {self.cfg.source.poll_interval:g}s. Ctrl+C to stop.")

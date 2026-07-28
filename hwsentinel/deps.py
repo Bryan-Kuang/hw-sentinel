@@ -14,18 +14,63 @@ make that work:
 
 from __future__ import annotations
 
+import ctypes
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
 import winreg
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config
-from .sink_rtss import rtss_running
 
 _UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+_TH32CS_SNAPPROCESS = 0x00000002
+_INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+class _ProcessEntry32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+def process_exists(exe_name: str) -> bool:
+    """Is a process with this executable name running?
+
+    Only the name is read, which needs no special rights — so this works against
+    elevated processes from an ordinary one.
+    """
+    snapshot = _kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snapshot == _INVALID_HANDLE:
+        return False
+    try:
+        entry = _ProcessEntry32()
+        entry.dwSize = ctypes.sizeof(_ProcessEntry32)
+        if not _kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return False
+        target = exe_name.lower()
+        while True:
+            if entry.szExeFile.lower() == target:
+                return True
+            if not _kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                return False
+    finally:
+        _kernel32.CloseHandle(snapshot)
 
 
 def rtss_from_registry() -> Path | None:
@@ -85,6 +130,9 @@ class DepSupervisor:
     _procs: dict[str, subprocess.Popen] = field(default_factory=dict)
     _last_attempt: dict[str, float] = field(default_factory=dict)
     status: dict[str, DepStatus] = field(default_factory=dict)
+    # start() runs on the main thread and heartbeat() on the poll thread. Without this
+    # both can decide a dependency is down and launch it at the same time.
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     # -- discovery ------------------------------------------------------------
 
@@ -121,7 +169,14 @@ class DepSupervisor:
 
     @staticmethod
     def rtss_alive() -> bool:
-        return rtss_running()
+        """Whether RTSS is actually running.
+
+        Deliberately NOT the shared memory: a file mapping survives as long as any
+        process holds a handle to it, and our own RTSS sink holds one. So after RTSS
+        exits the mapping lingers, `doctor` reports it as running, and nothing ever
+        restarts it. The process itself is the only honest answer.
+        """
+        return process_exists("RTSS.exe")
 
     def _alive(self, which: str) -> bool:
         return self.lhm_alive() if which == "lhm" else self.rtss_alive()
@@ -141,6 +196,10 @@ class DepSupervisor:
             return False
 
     def _ensure(self, which: str, wait: float) -> DepStatus:
+        with self._lock:
+            return self._ensure_locked(which, wait)
+
+    def _ensure_locked(self, which: str, wait: float) -> DepStatus:
         label = "LibreHardwareMonitor" if which == "lhm" else "RTSS"
         st = DepStatus(name=label)
 
