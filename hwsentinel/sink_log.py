@@ -17,7 +17,9 @@ from .rules import Event, EventKind
 class LogSink:
     def __init__(self, cfg: Config) -> None:
         self.enabled = cfg.log.enabled
-        self.path: Path = cfg.resolve(cfg.log.path)
+        # The log belongs to the user and must be writable without elevation, so it
+        # lives under the data root rather than beside the program.
+        self.path: Path = cfg.resolve_data(cfg.log.path)
         self.last_error = ""
 
     def write(self, event: Event) -> None:

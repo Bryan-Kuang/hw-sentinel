@@ -84,7 +84,19 @@ def mk_cfg(**over):
     base = dict(key="t", title="T", label="Tctl", sensor="cpu", unit="C",
                 op=">", value=88.0, clear_at=83.0, dwell=10.0, clear_dwell=15.0, cooldown=60.0)
     base.update(over)
-    return Config(root=Path("."), sensors={"cpu": "core-tctl-tdie"}, rules=[RuleCfg(**base)])
+    return Config(data_root=Path("."), sensors={"cpu": "core-tctl-tdie"}, rules=[RuleCfg(**base)])
+
+
+def check_paths():
+    """Program files and user data must resolve to different roots once installed."""
+    cfg = Config(data_root=Path(r"C:\ProgramData\hw-sentinel"),
+                 program_root=Path(r"C:\Program Files\hw-sentinel"))
+    check("sounds resolve under the program root",
+          cfg.resolve_program("assets/warn.wav") == Path(r"C:\Program Files\hw-sentinel\assets\warn.wav"))
+    check("event log resolves under the data root",
+          cfg.resolve_data("events.jsonl") == Path(r"C:\ProgramData\hw-sentinel\events.jsonl"))
+    check("absolute paths are left alone",
+          cfg.resolve_data(r"D:\elsewhere\log.jsonl") == Path(r"D:\elsewhere\log.jsonl"))
 
 
 def reading(v):
@@ -128,7 +140,7 @@ check("snooze clears", any(k is EventKind.CLEAR for k in kinds(eng.update(readin
 
 # Derived expression rule.
 eng2 = RuleEngine(Config(
-    root=Path("."),
+    data_root=Path("."),
     sensors={"hot": "temperatures/gpu-hot-spot", "core": "temperatures/gpu-core"},
     rules=[RuleCfg(key="d", title="D", label="Delta", expr="hot - core", unit="Â°C",
                    op=">", value=25.0, clear_at=20.0, dwell=0.0, clear_dwell=0.0, cooldown=0.0)],
@@ -144,6 +156,9 @@ check("expr rule trips on delta", kinds(eng2.update(HOT, 2001.0)) == [EventKind.
 eng3 = RuleEngine(mk_cfg(sensor="cpu"))
 eng3.resolver.aliases["cpu"] = "not-a-real-sensor"
 check("missing sensor recorded", eng3.update(R, 3000.0) == [] and "t" in eng3.errors)
+
+# --- path split -------------------------------------------------------------------
+check_paths()
 
 # --- config validation ----------------------------------------------------------
 check("real config.toml loads", bool(load(Path(__file__).resolve().parent / "config.toml").enabled_rules))

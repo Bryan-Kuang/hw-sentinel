@@ -17,9 +17,11 @@ from .config import Config
 class SoundSink:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg.sound
+        # Sounds ship with the program, so they come from the program root — under
+        # Program Files that is read-only, which is fine since we only read them.
         self.paths = {
-            "warn": cfg.resolve(cfg.sound.warn_wav),
-            "critical": cfg.resolve(cfg.sound.critical_wav),
+            "warn": cfg.resolve_program(cfg.sound.warn_wav),
+            "critical": cfg.resolve_program(cfg.sound.critical_wav),
         }
         self._last: dict[str, float] = {}
         self.last_error = ""

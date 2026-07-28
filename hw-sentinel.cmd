@@ -17,4 +17,12 @@ if not exist "%PY%" (
     exit /b 1
 )
 
-"%PY%" -m hwsentinel --config "%ROOT%config.toml" %*
+rem In a source checkout config.toml sits beside this script, and pinning it keeps the
+rem checkout isolated from an installed copy. An installed copy has no config.toml here
+rem - only config.default.toml - so fall through and let hwsentinel find (or seed) the
+rem user's config under %ProgramData%.
+if exist "%ROOT%config.toml" (
+    "%PY%" -m hwsentinel --config "%ROOT%config.toml" %*
+) else (
+    "%PY%" -m hwsentinel %*
+)

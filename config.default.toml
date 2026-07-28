@@ -1,11 +1,33 @@
-# hw-sentinel configuration
+# hw-sentinel default configuration
 #
-# The [sensors] patterns below are STARTING GUESSES. Run
-#     py -3 -m hwsentinel discover
-# and correct any that don't resolve. A pattern only needs to be unique — a path
-# suffix or substring is matched, so "temperatures/gpu-core" is enough.
-# Then confirm everything resolves with:
-#     py -3 -m hwsentinel doctor
+# This is the TEMPLATE. On first run it is copied to
+#     %ProgramData%\hw-sentinel\config.toml
+# and that copy is what you edit. Upgrades replace this file but never your copy, so
+# your thresholds survive.
+#
+# ---------------------------------------------------------------------------------
+# FIRST THING TO DO: check that the sensors below match your hardware.
+#
+#     hw-sentinel doctor
+#
+# Sensor names differ between CPU/GPU vendors, models, and LibreHardwareMonitor
+# versions, so the patterns here cannot be right for every machine. `doctor` prints
+# each rule as OK or FAIL. To see everything your hardware exposes:
+#
+#     hw-sentinel discover
+#     hw-sentinel discover --filter voltage
+#
+# A pattern only needs to be unique — a path suffix or substring is enough. If a
+# pattern matches more than one sensor, that is a hard error rather than a silent
+# wrong guess: qualify it with the hardware name, e.g. change
+#     "temperatures/gpu-core"  ->  "radeon-rx-9070-xt/temperatures/gpu-core"
+# This happens on most AMD desktops, where the CPU's integrated graphics exposes
+# sensors with the same names as the discrete card.
+#
+# If a sensor genuinely does not exist on your machine, set that rule's
+# enabled = false rather than pointing it at something approximate. A safety alarm
+# watching the wrong rail is worse than no alarm.
+# ---------------------------------------------------------------------------------
 
 [source]
 url = "http://localhost:8085/data.json"
@@ -38,38 +60,43 @@ critical_wav = "assets/critical.wav"
 
 [log]
 enabled = true
-path = "state/events.jsonl"
+path = "events.jsonl"       # relative to the folder holding this file
+
+[deps]
+# Launch LibreHardwareMonitor and RTSS as child processes, so only hw-sentinel needs
+# an autostart entry. Children inherit its elevated token, which is how LHM gets the
+# administrator rights it needs without a UAC prompt.
+# Already-running copies are adopted, never duplicated.
+manage = true
+lhm_path = ""      # blank = search the install dir, then the usual locations
+rtss_path = ""     # blank = search; not finding RTSS only costs in-game alerts
+start_timeout = 25.0
 
 
 # --- sensor aliases -----------------------------------------------------------
 # alias = "pattern matched against LibreHardwareMonitor sensor paths"
+# Run `hw-sentinel discover` and correct anything `doctor` reports as FAIL.
 
 [sensors]
-# Verified against LibreHardwareMonitor 0.9.6 on this machine (Zen 5 + RDNA 4).
-cpu_tctl        = "amd-ryzen-7-9800x3d/temperatures/core-tctl-tdie"
-
-# Measured Vcore from the board's Nuvoton SuperIO. The CPU also exposes per-core
-# "core-N-vid" sensors, but those are the *requested* VID, not the delivered rail.
-cpu_core_volts  = "nuvoton-nct6701d/voltages/vcore"
-
-# INFERRED — confirm this once against your BIOS / Ryzen Master SoC voltage.
-# LHM 0.9.6 exposes no explicit VDDCR_SOC sensor for the 9800X3D. On AM5 the iGPU
-# lives in the IOD powered by the SoC rail, and this sensor reads ~1.24 V, which is a
-# typical EXPO SoC voltage. If your BIOS disagrees, set rules.cpu_soc_voltage.enabled
-# = false rather than trusting the wrong rail for a safety alert.
-cpu_soc_volts   = "amd-radeon-tm-graphics/voltages/gpu-soc"
-
-# Qualified by GPU name: the integrated "AMD Radeon(TM) Graphics" also has a
-# voltages/gpu-core, and an unqualified pattern is (correctly) rejected as ambiguous.
-gpu_core_temp   = "amd-radeon-rx-9070-xt/temperatures/gpu-core"
-gpu_hotspot     = "amd-radeon-rx-9070-xt/temperatures/gpu-hot-spot"
-gpu_core_volts  = "amd-radeon-rx-9070-xt/voltages/gpu-core"
+cpu_tctl        = "temperatures/core-tctl-tdie"
+cpu_core_volts  = "voltages/vcore"
+# Most boards do not label CPU SoC voltage. On AM5 the integrated GPU sits in the
+# same I/O die powered by the SoC rail, which makes this a usable stand-in — but
+# CONFIRM IT against your BIOS before trusting the alarm, or disable the rule.
+cpu_soc_volts   = "voltages/gpu-soc"
+gpu_core_temp   = "temperatures/gpu-core"
+gpu_hotspot     = "temperatures/gpu-hot-spot"
+gpu_core_volts  = "voltages/gpu-core"
 
 
 # --- rules --------------------------------------------------------------------
 # op/value  trip point            clear_at     hysteresis, must be on the safe side
 # dwell     seconds over the line before tripping (kills transient spikes)
 # cooldown  minimum seconds between one clear and the next trip
+#
+# The defaults suit a Ryzen 7 9800X3D + Radeon RX 9070 XT. Different silicon runs
+# hotter or at different voltages — check them against your own idle and load
+# readings before relying on them.
 
 [rules.cpu_temp]
 enabled     = true
@@ -158,11 +185,9 @@ clear_dwell = 30
 cooldown    = 300
 severity    = "warn"
 
-# Tuned from observation on an RX 9070 XT: idles 0.36-0.66 V and reaches 1.11 V during
-# ordinary gaming. 1.20 V was above anything the card can hit, so the rule was inert;
-# 1.10 V sat *below* the normal peak and fired during normal play. 1.15 V is above
-# everything observed, so it should only speak up for something genuinely unusual -
-# most likely an unstable manual overclock or undervolt curve.
+# Set just above the card's normal ceiling. Measured on an RX 9070 XT: idle
+# 0.36-0.66 V, gaming peak 1.11 V. Too low and it fires during ordinary play; too
+# high and it can never fire at all. Check your own peak before changing it.
 [rules.gpu_core_voltage]
 enabled     = true
 title       = "GPU core voltage high"

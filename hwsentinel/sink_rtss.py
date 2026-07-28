@@ -60,6 +60,18 @@ class _Header(ctypes.Structure):
     ]
 
 
+def rtss_running() -> bool:
+    """Cheap liveness probe: the shared memory exists only while RTSS is running.
+
+    Used by the dependency supervisor so it never has to enumerate processes.
+    """
+    handle = _kernel32.OpenFileMappingW(_FILE_MAP_ALL_ACCESS, False, "RTSSSharedMemoryV2")
+    if not handle:
+        return False
+    _kernel32.CloseHandle(handle)
+    return True
+
+
 def sanitize(text: str) -> str:
     """RTSS renders a byte string; keep it to plain ASCII it can definitely draw."""
     return (

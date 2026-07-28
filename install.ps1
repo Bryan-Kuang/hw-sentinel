@@ -1,22 +1,17 @@
 <#
 .SYNOPSIS
-    Start hw-sentinel and its bundled dependencies automatically at logon.
+    Register hw-sentinel to start automatically at logon.
 
 .DESCRIPTION
-    Registers three scheduled tasks, all pointing at the private runtime in this folder:
+    Creates ONE scheduled task named "hw-sentinel". It runs with highest privileges,
+    and hw-sentinel launches LibreHardwareMonitor and RTSS itself as child processes,
+    which inherit that elevated token - so LHM gets the administrator rights it needs
+    to read sensors with no second task and no UAC prompt at boot.
 
-        hw-sentinel-lhm    LibreHardwareMonitor (the sensor source)
-        hw-sentinel-rtss   RivaTuner Statistics Server (in-game rendering)
-        hw-sentinel        the monitor itself
+    This task is the only thing that lives outside the install folder.
 
-    They run "with highest privileges" because LibreHardwareMonitor needs administrator
-    rights to read CPU temperature and voltage. That flag is what avoids a UAC prompt on
-    every boot.
-
-    These three task entries are the ONLY thing this project puts outside its own folder.
-    uninstall.ps1 removes them.
-
-    Run from an elevated PowerShell.
+    The Windows installer calls this with -InstallDir and -Silent. Run it by hand from
+    an elevated PowerShell when working from a source checkout.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File install.ps1
@@ -24,22 +19,17 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$InstallDir,
     [switch]$Uninstall,
-    [switch]$NoStart
+    [switch]$NoStart,
+    [switch]$Silent
 )
 
 $ErrorActionPreference = "Stop"
-$Root = $PSScriptRoot
+$TaskName = "hw-sentinel"
+if (-not $InstallDir) { $InstallDir = $PSScriptRoot }
 
-$Tasks = [ordered]@{
-    "hw-sentinel-lhm"  = @{ Exe = Join-Path $Root "runtime\lhm\LibreHardwareMonitor.exe";  Args = ""
-                            Desc = "Sensor source for hw-sentinel (needs elevation)." }
-    "hw-sentinel-rtss" = @{ Exe = Join-Path $Root "runtime\rtss\RTSS.exe";                 Args = ""
-                            Desc = "In-game overlay renderer for hw-sentinel." }
-    "hw-sentinel"      = @{ Exe = Join-Path $Root "runtime\python\pythonw.exe"
-                            Args = "-m hwsentinel --config `"$(Join-Path $Root 'config.toml')`" run"
-                            Desc = "Show a hardware alert only when a metric is abnormal." }
-}
+function Say($m) { if (-not $Silent) { Write-Host $m } }
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -50,61 +40,78 @@ function Test-Admin {
 function Remove-TaskIfPresent([string]$Name) {
     if (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $Name -Confirm:$false
-        Write-Host "removed task '$Name'"
-        return $true
+        Say "removed task '$Name'"
     }
-    return $false
 }
 
 if (-not (Test-Admin)) {
     Write-Error "Run this from an elevated PowerShell (Run as Administrator)."
 }
 
+# Earlier versions registered three tasks, one per component. Clear those out so an
+# upgrade does not leave orphans starting duplicate copies of LHM and RTSS.
+foreach ($legacy in @("hw-sentinel-lhm", "hw-sentinel-rtss")) { Remove-TaskIfPresent $legacy }
+
 if ($Uninstall) {
-    foreach ($name in $Tasks.Keys) { [void](Remove-TaskIfPresent $name) }
-    Write-Host "`nautostart removed. The folder itself is untouched."
+    # Stop the task before unregistering it, otherwise the monitor keeps running and
+    # holds its files open - which makes the uninstaller leave the folder behind.
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch {}
+    }
+    Remove-TaskIfPresent $TaskName
+
+    # Stop anything still running out of the install folder: the monitor, and the
+    # LibreHardwareMonitor / RTSS copies it launched. Matching on path means a
+    # system-wide RTSS the user runs for other things is never touched.
+    # Excluding unins*.exe matters: the uninstaller itself runs from the install
+    # directory, so an unfiltered sweep makes it terminate itself mid-uninstall.
+    $mine = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith($InstallDir, 'OrdinalIgnoreCase') -and
+        $_.Name -notlike 'unins*' -and
+        $_.ProcessId -ne $PID
+    })
+    foreach ($p in $mine) {
+        Say "stopping $($p.Name) (pid $($p.ProcessId))"
+        try {
+            $proc = Get-Process -Id $p.ProcessId -ErrorAction Stop
+            [void]$proc.CloseMainWindow()
+            if (-not $proc.WaitForExit(6000)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop }
+        } catch {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($mine) { Start-Sleep -Seconds 2 }
+
+    Say "`nautostart removed and processes stopped."
     return
 }
 
-foreach ($name in $Tasks.Keys) {
-    if (-not (Test-Path $Tasks[$name].Exe)) {
-        Write-Error "missing $($Tasks[$name].Exe)`nRun bootstrap.ps1 first."
-    }
+$pythonw = Join-Path $InstallDir "runtime\python\pythonw.exe"
+if (-not (Test-Path $pythonw)) {
+    Write-Error "missing $pythonw - run bootstrap.ps1 first (or reinstall)."
 }
 
-$trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+Remove-TaskIfPresent $TaskName
+
+$action  = New-ScheduledTaskAction -Execute $pythonw -Argument "-m hwsentinel run" `
+                                   -WorkingDirectory $InstallDir
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
                                         -LogonType Interactive -RunLevel Highest
-# These are daemons, not jobs that finish, so no execution time limit.
-$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
-                                          -DontStopIfGoingOnBatteries `
-                                          -StartWhenAvailable `
-                                          -ExecutionTimeLimit ([TimeSpan]::Zero) `
-                                          -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+# A daemon, not a job that finishes: no execution time limit, restart if it dies.
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+                                         -DontStopIfGoingOnBatteries `
+                                         -StartWhenAvailable `
+                                         -ExecutionTimeLimit ([TimeSpan]::Zero) `
+                                         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
-foreach ($name in $Tasks.Keys) {
-    $t = $Tasks[$name]
-    [void](Remove-TaskIfPresent $name)
-    $action = if ($t.Args) {
-        New-ScheduledTaskAction -Execute $t.Exe -Argument $t.Args -WorkingDirectory $Root
-    } else {
-        New-ScheduledTaskAction -Execute $t.Exe -WorkingDirectory (Split-Path $t.Exe)
-    }
-    Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
-                           -Principal $principal -Settings $settings -Description $t.Desc | Out-Null
-    Write-Host "registered '$name'"
-}
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+                       -Principal $principal -Settings $settings `
+                       -Description "Show a hardware alert only when a metric is abnormal." | Out-Null
+Say "registered '$TaskName' -> $pythonw"
 
 if (-not $NoStart) {
-    Write-Host "`nstarting now..."
-    # LHM first: hw-sentinel tolerates it being absent, but there is no reason to make
-    # it spend its first seconds reporting a dead sensor source.
-    foreach ($name in @("hw-sentinel-lhm", "hw-sentinel-rtss")) {
-        Start-ScheduledTask -TaskName $name; Write-Host "  started $name"
-    }
-    Start-Sleep -Seconds 10
-    Start-ScheduledTask -TaskName "hw-sentinel"; Write-Host "  started hw-sentinel"
+    Start-ScheduledTask -TaskName $TaskName
+    Say "started"
 }
-
-Write-Host "`nDone. Verify with:  .\hw-sentinel.cmd doctor"
-Write-Host "Remove with:        powershell -ExecutionPolicy Bypass -File uninstall.ps1"

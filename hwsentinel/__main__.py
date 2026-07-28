@@ -13,7 +13,8 @@ import tkinter as tk
 from pathlib import Path
 
 from . import APP_NAME, __version__
-from .config import Config, ConfigError, load
+from .config import Config, ConfigError, ensure_config, load
+from .deps import DepSupervisor
 from .rules import Alert, Event, EventKind, RuleEngine, expr_aliases
 from .sink_card import ACCENT, CardManager
 from .sink_log import LogSink
@@ -21,7 +22,6 @@ from .sink_rtss import RtssSink
 from .sink_sound import SoundSink
 from .source_lhm import LhmSource, SourceError, grouped
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.toml"
 
 
 def say(*args) -> None:
@@ -75,6 +75,7 @@ class Supervisor:
         self.sound = SoundSink(cfg)
         self.log = LogSink(cfg)
         self.rtss = RtssSink(cfg.rtss)
+        self.deps = DepSupervisor(cfg)
         self.queue: queue.Queue = queue.Queue()
         self.stop = threading.Event()
         self.source_error = ""
@@ -100,6 +101,9 @@ class Supervisor:
                 self.queue.put(("ok", events, self.engine.active))
             except SourceError as exc:
                 self.queue.put(("error", str(exc), []))
+                # A dead sensor source is usually a dead LibreHardwareMonitor, and
+                # this is the one place that can put it back on its feet.
+                self.deps.heartbeat()
             self.stop.wait(max(0.05, self.cfg.source.poll_interval - (time.time() - started)))
 
     # -- tk-thread pump -------------------------------------------------------
@@ -162,6 +166,7 @@ class Supervisor:
             self.rtss.close()
         except OSError:
             pass
+        self.deps.stop()
         self.cards.destroy_all()
         try:
             self.root.destroy()
@@ -180,6 +185,10 @@ class Supervisor:
             signal.signal(signal.SIGTERM, on_signal)
         except ValueError:
             pass
+
+        say(f"{APP_NAME} {__version__} starting — bringing up dependencies...")
+        for st in self.deps.start().values():
+            say(f"  {st.name}: {st.describe()}")
 
         say(f"{APP_NAME} {__version__} running — {len(self.cfg.enabled_rules)} rules, "
             f"polling every {self.cfg.source.poll_interval:g}s. Ctrl+C to stop.")
@@ -221,9 +230,25 @@ def cmd_discover(cfg: Config, args) -> int:
 
 def cmd_doctor(cfg: Config, args) -> int:
     ok = True
-    say(f"{APP_NAME} {__version__}\nconfig: {args.config}\n")
+    say(f"{APP_NAME} {__version__}")
+    say(f"config:  {args.config}")
+    say(f"program: {cfg.program_root}")
+    say(f"data:    {cfg.data_root}\n")
 
-    say(f"[1/5] LibreHardwareMonitor  {cfg.source.url}")
+    # Discovery first: when an installed copy misbehaves, "which dependency did it
+    # find, and did it start?" is almost always the answer.
+    say("[1/6] Dependencies")
+    deps = DepSupervisor(cfg)
+    say(f"      deps.manage = {str(cfg.deps.manage).lower()}")
+    for which, label in (("lhm", "LibreHardwareMonitor"), ("rtss", "RTSS")):
+        found = deps.find(which)
+        alive = deps.lhm_alive() if which == "lhm" else deps.rtss_alive()
+        state = "running" if alive else "not running"
+        say(f"      {label:<21} {state:<12} {found or 'NOT FOUND'}")
+        if which == "lhm" and not found and not alive:
+            ok = False
+
+    say(f"\n[2/6] LibreHardwareMonitor  {cfg.source.url}")
     readings = {}
     try:
         readings = LhmSource(cfg.source.url, cfg.source.timeout).poll()
@@ -235,7 +260,7 @@ def cmd_doctor(cfg: Config, args) -> int:
         say(f"      FAIL — {exc}")
         ok = False
 
-    say("\n[2/5] Sensors referenced by rules")
+    say("\n[3/6] Sensors referenced by rules")
     if readings:
         engine = RuleEngine(cfg)
         for rule in cfg.enabled_rules:
@@ -249,7 +274,7 @@ def cmd_doctor(cfg: Config, args) -> int:
     else:
         say("      skipped (no sensor data)")
 
-    say("\n[3/5] RTSS shared memory")
+    say("\n[4/6] RTSS shared memory")
     rtss = RtssSink(cfg.rtss)
     if not cfg.rtss.enabled:
         say("      disabled in config")
@@ -261,7 +286,7 @@ def cmd_doctor(cfg: Config, args) -> int:
         say("      (in-game alerts will not work; desktop card and sound still will)")
         ok = False
 
-    say("\n[4/5] Alert sounds")
+    say("\n[5/6] Alert sounds")
     sound = SoundSink(cfg)
     missing = sound.missing()
     if missing:
@@ -273,7 +298,7 @@ def cmd_doctor(cfg: Config, args) -> int:
         sound.play("warn", "doctor")
         time.sleep(1.0)
 
-    say("\n[5/5] Overlay window")
+    say("\n[6/6] Overlay window")
     try:
         set_dpi_aware()
         root = tk.Tk()
@@ -338,7 +363,11 @@ def cmd_run(cfg: Config, args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hwsentinel", description=__doc__)
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="path to config.toml")
+    parser.add_argument(
+        "--config",
+        help="path to config.toml (default: %ProgramData%\\hw-sentinel, then the "
+        "copy beside the program, seeding from config.default.toml if neither exists)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("run", help="monitor continuously and alert on abnormal readings")
@@ -354,10 +383,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        cfg = load(args.config)
+        config_path = Path(args.config) if args.config else ensure_config()
+        cfg = load(config_path)
     except ConfigError as exc:
         say(f"config error: {exc}")
         return 2
+    args.config = str(config_path)
 
     return {"run": cmd_run, "doctor": cmd_doctor, "discover": cmd_discover, "test": cmd_test}[
         args.command

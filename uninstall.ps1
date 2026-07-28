@@ -46,7 +46,7 @@ Write-Host "hw-sentinel uninstall" -ForegroundColor Cyan
 Write-Host "folder: $Root`n"
 
 # LHM and RTSS run elevated. An unelevated shell cannot read their executable paths, so
-# they look like "nothing is running" rather than being matched and stopped — say so
+# they look like "nothing is running" rather than being matched and stopped - say so
 # rather than reporting a clean sweep that did not happen.
 if (-not (Test-Admin)) {
     Write-Warning "Not running as administrator. Scheduled tasks cannot be removed, and"
@@ -67,7 +67,7 @@ foreach ($name in @("hw-sentinel", "hw-sentinel-lhm", "hw-sentinel-rtss")) {
 
 # --- 2. processes started from this folder ------------------------------------
 # Match on the executable path so a system-wide RTSS or an unrelated Python is never
-# touched — only what this folder started.
+# touched - only what this folder started.
 $mine = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
     ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($Root, 'OrdinalIgnoreCase')) -or
     ($_.CommandLine -and $_.CommandLine -match 'hwsentinel')

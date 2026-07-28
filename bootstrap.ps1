@@ -175,6 +175,20 @@ if (Test-Path (Join-Path $RtssDir "RTSS.exe")) {
     Write-Warning "To add it: install RTSS once, re-run bootstrap, then uninstall the system copy."
 }
 
+# --- working config ---------------------------------------------------------------
+Step "seeding config.toml"
+$cfgWorking = Join-Path $Root "config.toml"
+$cfgTemplate = Join-Path $Root "config.default.toml"
+if (Test-Path $cfgWorking) {
+    Info "already present, left alone"
+} elseif (Test-Path $cfgTemplate) {
+    Copy-Item $cfgTemplate $cfgWorking
+    Info "copied from config.default.toml - check the [sensors] block against your"
+    Info "hardware with:  .\hw-sentinel.cmd doctor"
+} else {
+    throw "missing $cfgTemplate"
+}
+
 # --- alert sounds ---------------------------------------------------------------
 Step "generating alert sounds"
 $python = Join-Path $PyDir "python.exe"

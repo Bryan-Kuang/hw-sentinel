@@ -25,12 +25,24 @@ Every number lives in `config.toml`.
 
 ## Setup
 
-> **Already set up on this machine** and running at logon. Skip to
-> [Verifying it works](#verifying-it-works-without-cooking-anything).
+Download `hw-sentinel-setup-<version>.exe` from
+[Releases](https://github.com/Bryan-Kuang/hw-sentinel/releases) and run it. It installs
+to `C:\Program Files\hw-sentinel`, brings its own Python, and starts monitoring at every
+logon. Nothing else on your machine is touched — see
+[INSTALL-MANIFEST.md](INSTALL-MANIFEST.md) for the exact accounting.
 
-Everything hw-sentinel needs — Python included — lives in this folder. There is no system
-Python, no winget package, nothing in Program Files, and nothing on your PATH. See
-[INSTALL-MANIFEST.md](INSTALL-MANIFEST.md) for the full accounting.
+> **SmartScreen will warn you.** The installer is unsigned, so Windows shows
+> "Windows protected your PC". Click **More info → Run anyway**. Clearing that warning
+> properly requires a paid code-signing certificate. Verify the SHA-256 on the release
+> page if you want to check the download first.
+
+After installing, run **Check hw-sentinel setup** from the Start menu. Sensor names differ
+between machines, so it will tell you if any rule needs its sensor corrected — see
+[Pin the sensor names](#3-pin-the-sensor-names).
+
+## Building from source
+
+Only needed if you want to develop or build the installer yourself.
 
 ### 1. Build the private runtime
 
@@ -51,20 +63,30 @@ runtime\python\python.exe generate_assets.py
 
 ### 3. Pin the sensor names
 
-Sensor naming on Zen 5 / RDNA 4 varies by LHM version, so the patterns shipped in
-`config.toml` are starting guesses. List what your machine actually exposes:
+Sensor naming varies by vendor, model and LHM version, so the patterns in
+`config.default.toml` cannot be right everywhere. `doctor` marks each rule OK or FAIL.
+To list what your machine actually exposes:
 
 ```bash
 hw-sentinel.cmd discover
 ```
 
-Correct any wrong patterns in the `[sensors]` table. A unique suffix or substring is
+Correct any wrong patterns in the `[sensors]` table of your config
+(`%ProgramData%\hw-sentinel\config.toml` when installed). A unique suffix or substring is
 enough — `temperatures/gpu-core` matches
-`amd-radeon-rx-9070-xt/temperatures/gpu-core`. Ambiguous patterns are a hard error
-rather than a silent wrong guess.
+`amd-radeon-rx-9070-xt/temperatures/gpu-core`.
+
+**Ambiguous patterns are a hard error, not a silent wrong guess.** On most AMD desktops
+the CPU's integrated graphics exposes sensors with the same names as the discrete card, so
+`voltages/gpu-core` matches two things and is rejected. Qualify it with the hardware name:
+
+```toml
+gpu_core_volts = "amd-radeon-rx-9070-xt/voltages/gpu-core"
+```
 
 If a sensor genuinely isn't exposed (SoC voltage depends on motherboard support), set
-that rule's `enabled = false`.
+that rule's `enabled = false` rather than aiming it at something approximate. A safety
+alarm watching the wrong rail is worse than no alarm.
 
 ### 4. Check everything resolves
 
@@ -78,34 +100,40 @@ hw-sentinel.cmd doctor
 hw-sentinel.cmd run
 ```
 
-To start it — and LHM and RTSS — automatically at logon, from an **elevated** PowerShell:
+To start automatically at logon, from an **elevated** PowerShell:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-That registers three scheduled tasks pointing at `runtime\`. They run with administrator
-rights, which is what LibreHardwareMonitor needs to read CPU temperature and voltage, and
-what avoids a UAC prompt on every boot. `install.ps1 -Uninstall` removes them.
+That registers **one** scheduled task. It runs with administrator rights, and hw-sentinel
+launches LibreHardwareMonitor and RTSS itself as child processes — they inherit that
+elevated token, which is how LHM gets the rights it needs to read sensors without a UAC
+prompt at every boot. `install.ps1 -Uninstall` removes it.
+
+### 6. Build the installer
+
+```bash
+winget install JRSoftware.InnoSetup
+```
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+```
+
+Produces `dist\hw-sentinel-setup-<version>.exe`. The build stages an allow-listed payload
+and **fails** if any RTSS file reaches it, since RTSS may not be redistributed.
 
 ## Uninstalling
 
-hw-sentinel writes nothing outside its own folder — no registry keys, no services, no
-Python packages — so removing it is deleting the folder, plus the scheduled tasks if you
-registered them. `uninstall.ps1` does the whole job:
+If you used the installer: **Settings → Apps → hw-sentinel → Uninstall**, or Add/Remove
+Programs. It stops the monitor, removes the scheduled task and every installed file, and
+asks whether to keep your thresholds and alert history.
 
-```bash
-powershell -ExecutionPolicy Bypass -File uninstall.ps1 -WhatIf
-```
+RTSS is deliberately left alone — it is a separate product with its own uninstaller, and
+you may be using it for other things.
 
-| Command | Effect |
-|---|---|
-| `uninstall.ps1` | hw-sentinel only; leaves LHM and RTSS installed |
-| `uninstall.ps1 -All` | also uninstalls LHM and RTSS via winget |
-| `uninstall.ps1 -All -RemoveProject` | also deletes this folder |
-
-Note that LHM and RTSS are **runtime** dependencies, not build tools — removing them stops
-alerts working (LHM entirely, RTSS for in-game only). Full details in
+For a source checkout, `uninstall.ps1` does the equivalent. Full accounting in
 [INSTALL-MANIFEST.md](INSTALL-MANIFEST.md).
 
 ## Verifying it works without cooking anything

@@ -1,14 +1,79 @@
-"""Configuration loading and validation."""
+"""Configuration loading and validation.
+
+Two roots matter, and conflating them breaks an installed copy:
+
+* the *program* root holds code, assets and the bundled runtime. Under
+  ``C:\\Program Files`` it is read-only for ordinary users.
+* the *data* root holds the config the user edits and the event log. It has to be
+  writable without administrator rights, and must survive an upgrade untouched.
+
+In a development checkout the two are the same folder, which is why the distinction
+went unnoticed until the installer work.
+"""
 
 from __future__ import annotations
 
+import os
+import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Folder containing the hwsentinel package — i.e. the install directory.
+PROGRAM_ROOT = Path(__file__).resolve().parent.parent
+APP_DIR_NAME = "hw-sentinel"
+CONFIG_NAME = "config.toml"
+DEFAULT_CONFIG_NAME = "config.default.toml"
+
 
 class ConfigError(Exception):
     """Raised when config.toml is missing, malformed, or internally inconsistent."""
+
+
+def program_data_root() -> Path:
+    """%PROGRAMDATA%\\hw-sentinel — where an installed copy keeps user data."""
+    base = os.environ.get("ProgramData") or os.environ.get("PROGRAMDATA")
+    return Path(base) / APP_DIR_NAME if base else PROGRAM_ROOT
+
+
+def config_search_path() -> list[Path]:
+    """Where to look for config.toml, most specific first.
+
+    The program-root entry is what keeps a development checkout working exactly as
+    before: config.toml sits beside the package, so the data root becomes the project
+    folder and nothing moves.
+    """
+    return [program_data_root() / CONFIG_NAME, PROGRAM_ROOT / CONFIG_NAME]
+
+
+def find_config() -> Path | None:
+    return next((p for p in config_search_path() if p.is_file()), None)
+
+
+def ensure_config() -> Path:
+    """Return a usable config path, seeding the user's copy on first run.
+
+    The installer only ever writes config.default.toml, so an upgrade cannot clobber
+    edited thresholds: this copies the default across once and then leaves it alone.
+    """
+    found = find_config()
+    if found:
+        return found
+
+    template = PROGRAM_ROOT / DEFAULT_CONFIG_NAME
+    if not template.is_file():
+        raise ConfigError(
+            "no config.toml found in any of: "
+            + ", ".join(str(p) for p in config_search_path())
+            + f"; and no template at {template}"
+        )
+    target = program_data_root() / CONFIG_NAME
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(template, target)
+    except OSError as exc:
+        raise ConfigError(f"cannot seed {target}: {exc}") from exc
+    return target
 
 
 @dataclass
@@ -56,6 +121,21 @@ class LogCfg:
 
 
 @dataclass
+class DepsCfg:
+    """Launching LibreHardwareMonitor and RTSS ourselves.
+
+    With this on, hw-sentinel is the only thing Windows needs to start: the children
+    inherit its elevated token, so LHM gets the administrator rights it needs to read
+    sensors without a second scheduled task or a second UAC prompt.
+    """
+
+    manage: bool = True
+    lhm_path: str = ""     # blank = search
+    rtss_path: str = ""    # blank = search; not finding RTSS is not an error
+    start_timeout: float = 25.0
+
+
+@dataclass
 class RuleCfg:
     key: str
     title: str
@@ -79,18 +159,26 @@ class RuleCfg:
 
 @dataclass
 class Config:
-    root: Path
+    data_root: Path
+    program_root: Path = PROGRAM_ROOT
     source: SourceCfg = field(default_factory=SourceCfg)
     card: CardCfg = field(default_factory=CardCfg)
     rtss: RtssCfg = field(default_factory=RtssCfg)
     sound: SoundCfg = field(default_factory=SoundCfg)
     log: LogCfg = field(default_factory=LogCfg)
+    deps: DepsCfg = field(default_factory=DepsCfg)
     sensors: dict[str, str] = field(default_factory=dict)
     rules: list[RuleCfg] = field(default_factory=list)
 
-    def resolve(self, relative: str) -> Path:
+    def resolve_program(self, relative: str) -> Path:
+        """For files shipped with the program: sounds, the bundled runtime."""
         p = Path(relative)
-        return p if p.is_absolute() else self.root / p
+        return p if p.is_absolute() else self.program_root / p
+
+    def resolve_data(self, relative: str) -> Path:
+        """For files the user owns: the event log. Must be writable unelevated."""
+        p = Path(relative)
+        return p if p.is_absolute() else self.data_root / p
 
     @property
     def enabled_rules(self) -> list[RuleCfg]:
@@ -127,12 +215,13 @@ def load(path: str | Path) -> Config:
         raise ConfigError(f"{path}: {exc}") from exc
 
     cfg = Config(
-        root=path.parent.resolve(),
+        data_root=path.parent.resolve(),
         source=_build(SourceCfg, _section(raw, "source"), "source"),
         card=_build(CardCfg, _section(raw, "card"), "card"),
         rtss=_build(RtssCfg, _section(raw, "rtss"), "rtss"),
         sound=_build(SoundCfg, _section(raw, "sound"), "sound"),
         log=_build(LogCfg, _section(raw, "log"), "log"),
+        deps=_build(DepsCfg, _section(raw, "deps"), "deps"),
         sensors=dict(_section(raw, "sensors")),
     )
 

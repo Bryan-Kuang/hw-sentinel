@@ -2,91 +2,95 @@
 
 Exactly what this project puts on the machine, and how to undo it.
 
-**Design rule: everything lives inside this folder.** There is no system Python, no winget
-package, no Program Files directory, no PATH entry, no service, no driver, and nothing in
-`site-packages`. Deleting the folder removes the whole runtime.
+Program files and user data are deliberately separate, because an installed copy lives in
+a read-only location while your thresholds must stay editable and survive upgrades.
 
-Three exceptions exist and are listed in [Outside this folder](#outside-this-folder).
-
-## Inside this folder
-
-```
-hw-sentinel\
-  runtime\
-    python\      private CPython 3.12.10 (embeddable) + tkinter
-    lhm\         LibreHardwareMonitor 0.9.6, web server pre-enabled on :8085
-    rtss\        RivaTuner Statistics Server 7.3.7, run portably
-    _cache\      downloaded artifacts, safe to delete after bootstrap
-  hwsentinel\    the application
-  assets\        generated alert sounds
-  state\         event log
-  config.toml    thresholds and sensor mappings
-```
-
-`bootstrap.ps1` builds `runtime\` from scratch. It downloads over HTTPS from official
-upstreams and verifies each artifact against a pinned SHA-256; a mismatch aborts.
-
-| Artifact | Source | SHA-256 |
+| | Path | Notes |
 |---|---|---|
-| `python-3.12.10-embed-amd64.zip` | python.org | `4ACBED6D…25A3C3` |
-| `tcltk.msi` | python.org | `55C96FFA…276E2A` |
-| `LibreHardwareMonitor.zip` | GitHub releases | `086D9F1B…29C001` |
+| Program | `C:\Program Files\hw-sentinel` | Read-only. Removed entirely on uninstall. |
+| User data | `C:\ProgramData\hw-sentinel` | `config.toml`, `events.jsonl`. Writable without admin. Uninstall asks before removing. |
+| Autostart | Scheduled task `hw-sentinel` | The only thing outside those two folders. |
 
-The embeddable Python deliberately omits tkinter, so the card would not render. Its files
-come from the official `tcltk` component, unpacked with `msiexec /a` — an administrative
-install, which extracts files **without registering the product** anywhere.
+## What is inside the install folder
 
-RTSS has no portable distribution. `bootstrap.ps1` copies an installed tree into
-`runtime\rtss\`; it then runs from there with no system install present.
+```
+C:\Program Files\hw-sentinel\
+  runtime\python\   private CPython 3.12 + tkinter (no registry, no PATH)
+  runtime\lhm\      LibreHardwareMonitor, web server pre-enabled on :8085
+  hwsentinel\       the application
+  assets\           alert sounds
+  config.default.toml   template; copied to ProgramData on first run
+```
 
-## Outside this folder
+There is **no system Python, no package-manager entry, nothing on PATH, nothing in
+site-packages, no service and no driver**.
 
-Three things, all removed by `uninstall.ps1`.
+RTSS is not here: it cannot be redistributed. See [RTSS](#rtss) below.
 
-### 1. Scheduled tasks (3)
+## What is outside the install folder
 
-`hw-sentinel`, `hw-sentinel-lhm`, `hw-sentinel-rtss` — created by `install.ps1`, all
-pointing at `runtime\`. They run at logon "with highest privileges", which is what lets
-LibreHardwareMonitor get the administrator rights it needs for CPU temperature and voltage
-without a UAC prompt on every boot.
+Three things, all handled by the uninstaller.
 
-### 2. `HKCU\Software\Unwinder\RTSS`
+### 1. One scheduled task
 
-RTSS writes its own settings here whenever it runs. This is the one thing that cannot be
-contained: RTSS is portable in every other respect, but not in this. `uninstall.ps1`
-deletes the key (pass `-KeepRtssSettings` to keep it).
+`hw-sentinel`, at logon, "run with highest privileges". LibreHardwareMonitor needs
+administrator rights to read CPU temperature and voltage, and that flag is what avoids a
+UAC prompt on every boot. hw-sentinel launches LHM and RTSS itself as child processes,
+which inherit the elevated token — so one task covers all three.
 
-### 3. Transient hooking
+Earlier versions registered three tasks. `install.ps1` removes those on upgrade.
 
-While running, RTSS injects `RTSSHooks64.dll` into 3D applications — that is how it draws
-inside a game. Nothing persists after it exits.
+### 2. `%ProgramData%\hw-sentinel`
 
-## What is *not* disposable
+Your `config.toml` and `events.jsonl`. Granted modify permission at install time so you
+can edit thresholds without elevation. The uninstaller asks before deleting it; the
+default is to keep it.
 
-**LibreHardwareMonitor and RTSS are runtime dependencies, not build tools.** LHM *is* the
-sensor source — without it nothing is read and no alert can fire. RTSS is what draws inside
-an exclusive-fullscreen game; without it the card, the sound, and windowed/borderless games
-all still work. Neither is scaffolding to clean up after development; they come off when you
-stop using hw-sentinel, which `uninstall.ps1` does in one step.
+### 3. `HKCU\Software\Unwinder\RTSS`
+
+Written by RTSS itself whenever it runs. The one thing that cannot be contained.
+
+## RTSS
+
+RivaTuner Statistics Server is proprietary freeware. **It is not bundled**, and
+`packaging\build.ps1` fails the build if any RTSS file reaches the payload.
+
+Setup asks, on a page that names the exact download URL, whether to fetch it from the
+official Guru3D mirror. If you agree, RTSS's own installer runs visibly so you can see
+what is being installed and cancel it. Declining costs only the on-screen text inside
+exclusive-fullscreen games — the desktop card, windowed games, and the alert sound all
+work regardless.
+
+The uninstaller never removes RTSS.
+
+## Bundled third-party components
+
+Fetched from official sources by `bootstrap.ps1`, each verified against a pinned SHA-256.
+
+| Component | Licence | Notes |
+|---|---|---|
+| CPython (embeddable) + Tcl/Tk | PSF | `LICENSE.txt` ships alongside |
+| LibreHardwareMonitor | MPL-2.0 | Licence text fetched from the project and shipped; unmodified |
+| RivaTuner Statistics Server | Proprietary | **Not bundled** — downloaded on consent |
+
+The embeddable Python build omits tkinter, so the card could not render. Its files come
+from the official `tcltk` component, unpacked with `msiexec /a` — an administrative
+install, which extracts files without registering the product anywhere.
 
 ## Removing everything
+
+**Settings → Apps → hw-sentinel → Uninstall.** That stops the monitor, removes the task
+and every installed file, and asks about your data.
+
+From a source checkout instead:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File uninstall.ps1 -WhatIf
 ```
 
-| Command | Effect |
-|---|---|
-| `uninstall.ps1` | Stops everything started from here, removes the three scheduled tasks and the RTSS registry key. Leaves the folder. |
-| `uninstall.ps1 -RemoveProject` | The above, plus deletes this folder — which is the entire runtime. |
-| `uninstall.ps1 -KeepRtssSettings` | Leaves `HKCU\Software\Unwinder` alone. |
-
-Run it from an elevated PowerShell so it can remove the scheduled tasks.
-
 ## Notes on removing a system-wide RTSS
 
-If you installed RTSS normally in order to seed `runtime\rtss\`, removing the system copy
-afterwards has two quirks worth knowing:
+If you installed RTSS separately and later want it gone:
 
 - Its uninstaller is NSIS. Run it with `/S` for a genuinely silent removal — without that
   flag it opens a language-selection dialog that looks exactly like an installer.
