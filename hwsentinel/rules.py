@@ -22,6 +22,16 @@ from .config import Config, RuleCfg
 from .source_lhm import Reading, SensorResolver, SourceError
 
 
+# Sensible decimal places per unit. One decimal suits temperatures but destroys
+# voltages: 1.11 V and a 1.10 V threshold both render as "1.1", so the alert reads
+# "1.1V over 1.1V" and looks like a bug.
+_UNIT_DECIMALS = {"V": 3, "A": 2, "W": 1, "%": 0, "RPM": 0, "MHz": 0}
+
+
+def decimals_for(unit: str) -> int:
+    return _UNIT_DECIMALS.get(unit.strip(), 1)
+
+
 class State(Enum):
     OK = "ok"
     PENDING = "pending"      # over the line, waiting out `dwell`
@@ -213,12 +223,18 @@ class RuleEngine:
         # Measured from the crossing, not the trip, so a rule with a 10s dwell reports
         # "for 10s" the instant it appears rather than "for 0s".
         held = max(0, int(now - st.over_since))
-        arrow = "over" if rule.op == ">" else "under"
         unit = st.unit
-        detail = (
-            f"{rule.label} {st.last_value:.1f}{unit} · "
-            f"{arrow} {rule.value:g}{unit} for {held}s"
-        )
+        dp = decimals_for(unit)
+        value_s = f"{st.last_value:.{dp}f}{unit}"
+
+        breached = st.last_value > rule.value if rule.op == ">" else st.last_value < rule.value
+        if breached:
+            arrow = "over" if rule.op == ">" else "under"
+            detail = f"{rule.label} {value_s} · {arrow} {rule.value:.{dp}f}{unit} for {held}s"
+        else:
+            # Reached on the way out. Saying "over 88°C" while showing 60.5°C reads as
+            # a contradiction, so describe the recovery instead.
+            detail = f"{rule.label} {value_s} · recovered after {held}s"
         return Alert(
             key=rule.key,
             title=rule.title,
