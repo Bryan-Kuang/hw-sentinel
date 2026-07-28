@@ -21,6 +21,11 @@
 param(
     [string]$InstallDir,
     [switch]$Uninstall,
+    # Stop a copy running from -InstallDir and clear the files it generated, without
+    # touching the scheduled task. Used when upgrading in place, and when clearing out
+    # an old folder after the program has been moved somewhere else - in both cases the
+    # task is already registered against the new location and must survive.
+    [switch]$StopOnly,
     [switch]$NoStart,
     [switch]$Silent
 )
@@ -44,40 +49,29 @@ function Remove-TaskIfPresent([string]$Name) {
     }
 }
 
-if (-not (Test-Admin)) {
-    Write-Error "Run this from an elevated PowerShell (Run as Administrator)."
-}
-
-# Earlier versions registered three tasks, one per component. Clear those out so an
-# upgrade does not leave orphans starting duplicate copies of LHM and RTSS.
-foreach ($legacy in @("hw-sentinel-lhm", "hw-sentinel-rtss")) { Remove-TaskIfPresent $legacy }
-
-if ($Uninstall) {
-    # Stop the task before unregistering it, otherwise the monitor keeps running and
-    # holds its files open - which makes the uninstaller leave the folder behind.
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch {}
-    }
-    Remove-TaskIfPresent $TaskName
-
-    # Everything below deletes files and kills processes by folder. If someone installed
+function Stop-Ours([string]$Dir) {
+    # Everything here deletes files and kills processes by folder. If someone installed
     # into a folder they also keep other things in, that would reach beyond us - so do
     # none of it unless the folder actually contains this program.
-    $marker = Join-Path $InstallDir "hwsentinel\__main__.py"
+    $marker = Join-Path $Dir "hwsentinel\__main__.py"
     if (-not (Test-Path $marker)) {
-        Say "'$InstallDir' does not look like a hw-sentinel install (no $marker)."
+        Say "'$Dir' does not look like a hw-sentinel install (no $marker)."
         Say "Skipping process and file cleanup so nothing outside this program is touched."
         return
     }
 
-    # Stop anything still running out of the install folder: the monitor, and the
+    # Stop anything still running out of that folder: the monitor, and the
     # LibreHardwareMonitor / RTSS copies it launched. Matching on path means a
     # system-wide RTSS the user runs for other things is never touched.
     # Excluding unins*.exe matters: the uninstaller itself runs from the install
     # directory, so an unfiltered sweep makes it terminate itself mid-uninstall.
+    # Compare against the folder plus a separator. A bare prefix test is wrong: it makes
+    # "C:\Program" match "C:\Program Files\...", so cleaning up an old folder can kill
+    # the copy that was just installed next door. That happened.
+    $prefix = $Dir.TrimEnd('\') + '\'
     $mine = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $_.ExecutablePath -and
-        $_.ExecutablePath.StartsWith($InstallDir, 'OrdinalIgnoreCase') -and
+        $_.ExecutablePath.StartsWith($prefix, 'OrdinalIgnoreCase') -and
         $_.Name -notlike 'unins*' -and
         $_.ProcessId -ne $PID
     })
@@ -96,17 +90,40 @@ if ($Uninstall) {
     # Python writes bytecode caches and LibreHardwareMonitor rewrites its settings on
     # exit. Neither is tracked by the installer, and leaving them behind blocks removal
     # of the directories holding them. Scoped to our own two subfolders rather than
-    # sweeping the whole install directory, which may not be exclusively ours.
+    # sweeping the whole folder, which may not be exclusively ours.
     foreach ($sub in @("hwsentinel", "runtime")) {
-        $path = Join-Path $InstallDir $sub
+        $path = Join-Path $Dir $sub
         if (Test-Path $path) {
             Get-ChildItem $path -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    Remove-Item (Join-Path $InstallDir "runtime\lhm\LibreHardwareMonitor.config") `
+    Remove-Item (Join-Path $Dir "runtime\lhm\LibreHardwareMonitor.config") `
         -Force -ErrorAction SilentlyContinue
+}
 
+if (-not (Test-Admin)) {
+    Write-Error "Run this from an elevated PowerShell (Run as Administrator)."
+}
+
+if ($StopOnly) {
+    Stop-Ours $InstallDir
+    Say "stopped; scheduled task left alone."
+    return
+}
+
+# Earlier versions registered three tasks, one per component. Clear those out so an
+# upgrade does not leave orphans starting duplicate copies of LHM and RTSS.
+foreach ($legacy in @("hw-sentinel-lhm", "hw-sentinel-rtss")) { Remove-TaskIfPresent $legacy }
+
+if ($Uninstall) {
+    # Stop the task before unregistering it, otherwise the monitor keeps running and
+    # holds its files open - which makes the uninstaller leave the folder behind.
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch {}
+    }
+    Remove-TaskIfPresent $TaskName
+    Stop-Ours $InstallDir
     Say "`nautostart removed, processes stopped, generated files cleaned."
     return
 }

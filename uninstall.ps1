@@ -68,8 +68,10 @@ foreach ($name in @("hw-sentinel", "hw-sentinel-lhm", "hw-sentinel-rtss")) {
 # --- 2. processes started from this folder ------------------------------------
 # Match on the executable path so a system-wide RTSS or an unrelated Python is never
 # touched - only what this folder started.
+# Folder plus a separator, so "C:\Program" cannot match "C:\Program Files\...".
+$rootPrefix = $Root.TrimEnd('\') + '\'
 $mine = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($Root, 'OrdinalIgnoreCase')) -or
+    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($rootPrefix, 'OrdinalIgnoreCase')) -or
     ($_.CommandLine -and $_.CommandLine -match 'hwsentinel')
 })
 foreach ($p in $mine) {

@@ -27,7 +27,9 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
-DefaultDirName={autopf}\{#AppName}
+; Resolved in code so that a silent upgrade still lands on the existing installation
+; rather than the default folder - UsePreviousAppDir is off, so Inno will not do it.
+DefaultDirName={code:GetDefaultDir}
 DefaultGroupName={#AppName}
 LicenseFile=..\LICENSE
 OutputDir=..\dist
@@ -44,6 +46,11 @@ UninstallDisplayName={#AppName} {#AppVersion}
 UninstallDisplayIcon={app}\runtime\lhm\LibreHardwareMonitor.exe
 DisableProgramGroupPage=yes
 MinVersion=10.0
+; Both off so the mode page below is in charge of the install location. Left at their
+; defaults, Inno silently reuses the previous folder and hides the folder page, which
+; removes any chance of choosing a new one.
+UsePreviousAppDir=no
+DisableDirPage=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -109,6 +116,13 @@ var
   RtssPage: TInputOptionWizardPage;
   DownloadPage: TDownloadWizardPage;
   RtssZip: String;
+  ModePage: TInputOptionWizardPage;   { upgrade in place, or move elsewhere }
+  PrevLocation: String;               { where the existing copy lives, '' if none }
+  PrevVersion: String;
+
+const
+  ModeInPlace = 0;
+  ModeRelocate = 1;
 
 function ExistingInstall(var Path, Ver: String): Boolean;
 begin
@@ -121,24 +135,54 @@ begin
 end;
 
 function InitializeSetup(): Boolean;
-var
-  Path, Ver: String;
 begin
   Result := True;
-  if not ExistingInstall(Path, Ver) then
+  if not ExistingInstall(PrevLocation, PrevVersion) then
+  begin
+    PrevLocation := '';
+    PrevVersion := '';
+  end;
+end;
+
+function GetDefaultDir(Param: String): String;
+begin
+  { An explicit /DIR= must win. A code-based DefaultDirName is evaluated in preference
+    to it, so without this an operator asking for a specific folder is silently ignored
+    and the install goes wherever the previous one was. }
+  Result := ExpandConstant('{param:DIR|}');
+  Log('GetDefaultDir: /DIR="' + Result + '"  PrevLocation="' + PrevLocation + '"');
+  if Result <> '' then
+  begin
+    Log('GetDefaultDir -> using /DIR: ' + Result);
     Exit;
-  { Silent runs are upgrades driven by a script or a package manager; prompting there
-    would just hang them. }
-  if WizardSilent() then
-    Exit;
-  if MsgBox('hw-sentinel ' + Ver + ' is already installed:' + #13#10 + #13#10 +
-            '    ' + RemoveBackslash(Path) + #13#10 + #13#10 +
-            'Install version {#AppVersion} over it?' + #13#10 + #13#10 +
-            'Your thresholds and alert history are kept. Monitoring stops briefly and' + #13#10 +
-            'restarts on its own when setup finishes.' + #13#10 + #13#10 +
-            'Choose No to cancel and leave the current installation untouched.',
-            mbConfirmation, MB_YESNO) = IDNO then
-    Result := False;
+  end;
+  { Otherwise default to where it already is, so a scripted upgrade does not relocate
+    an install that lives somewhere non-default. }
+  if PrevLocation <> '' then
+    Result := RemoveBackslash(PrevLocation)
+  else
+    Result := ExpandConstant('{autopf}\{#AppName}');
+  Log('GetDefaultDir -> ' + Result);
+end;
+
+{ -1 this build is older than what is installed, 0 same, 1 newer. }
+function VersionDelta(): Integer;
+var
+  Installed, Building: Int64;
+begin
+  Result := 0;
+  if StrToVersion(PrevVersion, Installed) and StrToVersion('{#AppVersion}', Building) then
+    Result := ComparePackedVersion(Building, Installed);
+end;
+
+function Upgrading(): Boolean;
+begin
+  Result := (PrevLocation <> '');
+end;
+
+function RelocateChosen(): Boolean;
+begin
+  Result := Upgrading() and (ModePage.SelectedValueIndex = ModeRelocate);
 end;
 
 function RtssFromRegistry(RootView: Integer): String;
@@ -187,7 +231,46 @@ begin
 end;
 
 procedure InitializeWizard();
+var
+  Headline, InPlaceLabel: String;
+  Delta: Integer;
 begin
+  if Upgrading() then
+  begin
+    Delta := VersionDelta();
+    if Delta > 0 then
+    begin
+      Headline := 'Version ' + PrevVersion + ' is already installed. This is version {#AppVersion}.';
+      InPlaceLabel := 'Upgrade it where it is  (recommended)';
+    end
+    else if Delta = 0 then
+    begin
+      Headline := 'Version {#AppVersion} is already installed - the same version as this one.';
+      InPlaceLabel := 'Repair it where it is  (recommended)';
+    end
+    else
+    begin
+      Headline := 'Version ' + PrevVersion + ' is installed, which is NEWER than this one ({#AppVersion}).';
+      InPlaceLabel := 'Go back to version {#AppVersion} where it is';
+    end;
+
+    { Radio buttons, not checkboxes: these are mutually exclusive. }
+    ModePage := CreateInputOptionPage(wpWelcome,
+      'hw-sentinel is already installed',
+      Headline,
+      'Currently installed in:' + #13#10 + #13#10 +
+      '    ' + RemoveBackslash(PrevLocation) + #13#10 + #13#10 +
+      'Your alert thresholds and history are kept either way - they are stored' + #13#10 +
+      'separately from the program.' + #13#10 + #13#10 +
+      'To leave the current installation completely untouched, press Cancel.',
+      True, False);
+    ModePage.Add(InPlaceLabel);
+    ModePage.Add('Install to a different folder, and delete the old one afterwards');
+    ModePage.SelectedValueIndex := ModeInPlace;
+  end;
+
+  Log('InitializeWizard: WizardDirValue="' + WizardDirValue + '"');
+
   RtssPage := CreateInputOptionPage(wpSelectDir,
     'In-game alerts (optional)',
     'hw-sentinel can show alerts inside full-screen games, but needs one extra program.',
@@ -211,8 +294,14 @@ end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
+  Result := False;
   { Nothing to ask if RTSS is already on the machine. }
-  Result := (PageID = RtssPage.ID) and RtssInstalled();
+  if PageID = RtssPage.ID then
+    Result := RtssInstalled();
+  { Upgrading in place: the folder is already decided, so asking would only invite
+    accidentally splitting the install across two locations. }
+  if PageID = wpSelectDir then
+    Result := Upgrading() and (not RelocateChosen());
 end;
 
 function WantsRtss(): Boolean;
@@ -226,6 +315,16 @@ var
   Chosen: String;
 begin
   Result := True;
+
+  { Only ever widen the choice, never narrow it. Setting the directory for the in-place
+    case used to live here too, which was both redundant - GetDefaultDir already returns
+    it - and actively wrong: a silent install still walks the page flow and calls this,
+    so it silently overwrote an explicit /DIR= and the install went nowhere near where
+    it was asked to go. }
+  if (ModePage <> nil) and (CurPageID = ModePage.ID) and RelocateChosen()
+     and (ExpandConstant('{param:DIR|}') = '') then
+    { They asked to move, so offer the default location rather than the old one. }
+    WizardForm.DirEdit.Text := ExpandConstant('{autopf}\{#AppName}');
 
   if CurPageID = wpSelectDir then
   begin
@@ -267,6 +366,8 @@ var
   Script: String;
 begin
   Result := '';
+  Log('PrepareToInstall: WizardDirValue="' + WizardDirValue + '"  {app}="' +
+      ExpandConstant('{app}') + '"');
   // Runs before a single file is copied. On an upgrade the previous monitor is still
   // running out of the install folder and holding its interpreter DLL open, which would
   // otherwise make Inno either fail the copy or defer it to a reboot. Stopping it here
@@ -275,16 +376,58 @@ begin
   // Inno constant written inside one would terminate it early.)
   Script := ExpandConstant('{app}\install.ps1');
   if FileExists(Script) then
+    { -StopOnly, not -Uninstall: the scheduled task is re-registered later anyway, and
+      tearing it down here would leave the machine with no autostart if setup failed
+      partway through. }
     Exec('powershell.exe',
-      '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -Uninstall -Silent -InstallDir "' +
+      '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -StopOnly -Silent -InstallDir "' +
       ExpandConstant('{app}') + '"',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure RemoveOldInstall();
+var
+  OldDir, NewDir, Script: String;
+  ResultCode: Integer;
+begin
+  { Triggered by the mode page, and also by /DIR= on a scripted upgrade - in both cases
+    the program has moved and the old copy is dead weight. }
+  if not Upgrading() then
+    Exit;
+  OldDir := RemoveBackslash(PrevLocation);
+  NewDir := RemoveBackslash(ExpandConstant('{app}'));
+  if (OldDir = '') or (CompareText(OldDir, NewDir) = 0) or (not DirExists(OldDir)) then
+    Exit;
+  { Last line of defence before deleting a whole tree: it must actually contain this
+    program. A stale or wrong registry entry must never turn into a recursive delete. }
+  if not FileExists(OldDir + '\hwsentinel\__main__.py') then
+    Exit;
+
+  { Stop whatever is still running there first. -StopOnly leaves the scheduled task
+    alone: by now it points at the new location and must survive. The script also
+    refuses to touch a folder that does not contain this program. }
+  Script := OldDir + '\install.ps1';
+  if FileExists(Script) then
+    Exec('powershell.exe',
+      '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -StopOnly -Silent -InstallDir "' +
+      OldDir + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  if not DelTree(OldDir, True, True, True) then
+    MsgBox('The program was installed to:' + #13#10 + #13#10 +
+           '    ' + NewDir + #13#10 + #13#10 +
+           'but the old folder could not be fully removed:' + #13#10 + #13#10 +
+           '    ' + OldDir + #13#10 + #13#10 +
+           'It is no longer used and can be deleted by hand.',
+           mbInformation, MB_OK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
+  if CurStep = ssPostInstall then
+    RemoveOldInstall();
+
   if (CurStep = ssPostInstall) and (RtssZip <> '') then
   begin
     { Runs the vendor's installer visibly - see install-rtss.ps1 for why. }
