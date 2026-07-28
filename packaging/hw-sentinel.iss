@@ -102,10 +102,44 @@ Type: dirifempty; Name: "{app}\assets"
 Type: dirifempty; Name: "{app}"
 
 [Code]
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3A1C42-5B7E-4D91-A6C3-2E9F7B4D8A15}_is1';
+
 var
   RtssPage: TInputOptionWizardPage;
   DownloadPage: TDownloadWizardPage;
   RtssZip: String;
+
+function ExistingInstall(var Path, Ver: String): Boolean;
+begin
+  { 64-bit view first: this installs in 64-bit mode, so that is where the key lands. }
+  Result := RegQueryStringValue(HKLM64, UninstallKey, 'InstallLocation', Path) or
+            RegQueryStringValue(HKLM, UninstallKey, 'InstallLocation', Path);
+  if Result then
+    if not RegQueryStringValue(HKLM64, UninstallKey, 'DisplayVersion', Ver) then
+      RegQueryStringValue(HKLM, UninstallKey, 'DisplayVersion', Ver);
+end;
+
+function InitializeSetup(): Boolean;
+var
+  Path, Ver: String;
+begin
+  Result := True;
+  if not ExistingInstall(Path, Ver) then
+    Exit;
+  { Silent runs are upgrades driven by a script or a package manager; prompting there
+    would just hang them. }
+  if WizardSilent() then
+    Exit;
+  if MsgBox('hw-sentinel ' + Ver + ' is already installed:' + #13#10 + #13#10 +
+            '    ' + RemoveBackslash(Path) + #13#10 + #13#10 +
+            'Install version {#AppVersion} over it?' + #13#10 + #13#10 +
+            'Your thresholds and alert history are kept. Monitoring stops briefly and' + #13#10 +
+            'restarts on its own when setup finishes.' + #13#10 + #13#10 +
+            'Choose No to cancel and leave the current installation untouched.',
+            mbConfirmation, MB_YESNO) = IDNO then
+    Result := False;
+end;
 
 function RtssInstalled(): Boolean;
 begin
@@ -155,8 +189,20 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   ErrorCode: Integer;
+  Chosen: String;
 begin
   Result := True;
+
+  if CurPageID = wpSelectDir then
+  begin
+    { Always land in a folder of our own. Uninstall removes whole subtrees and stops
+      processes by folder, so installing directly into something like D:\Tools - which
+      may hold the user's own files - must not be possible. }
+    Chosen := RemoveBackslash(WizardDirValue);
+    if CompareText(ExtractFileName(Chosen), '{#AppName}') <> 0 then
+      WizardForm.DirEdit.Text := AddBackslash(Chosen) + '{#AppName}';
+  end;
+
   if (CurPageID = RtssPage.ID) and WantsRtss() then
   begin
     DownloadPage.Clear;
@@ -208,10 +254,18 @@ begin
   if (CurStep = ssPostInstall) and (RtssZip <> '') then
   begin
     { Runs the vendor's installer visibly - see install-rtss.ps1 for why. }
-    if not Exec('powershell.exe',
+    if Exec('powershell.exe',
         '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-rtss.ps1') +
         '" -ZipPath "' + RtssZip + '"',
-        '', SW_SHOW, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+        '', SW_SHOW, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    begin
+      { Remember that WE put RTSS on this machine. Without this the uninstaller cannot
+        tell an RTSS the user chose from one they only have because of us, and would
+        have to leave every copy behind. }
+      SaveStringToFile(ExpandConstant('{#DataDir}\.rtss-installed-by-setup'),
+                       'Installed by hw-sentinel {#AppVersion} setup.' + #13#10, False);
+    end
+    else
     begin
       if MsgBox('RivaTuner Statistics Server was not installed, so in-game alerts will' + #13#10 +
                 'not be available. Everything else works normally.' + #13#10 + #13#10 +
@@ -222,10 +276,54 @@ begin
   end;
 end;
 
+procedure OfferRtssRemoval();
+var
+  Script, Report, Uninst: String;
+  Text: AnsiString;   { LoadStringFromFile requires AnsiString, not String }
+  ResultCode: Integer;
+begin
+  { Runs while our files still exist, so the checker is still on disk. }
+  Script := ExpandConstant('{app}\rtss-check.ps1');
+  Report := ExpandConstant('{tmp}\rtss-report.txt');
+  if not FileExists(Script) then
+    Exit;
+
+  if not Exec('powershell.exe',
+      '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -ReportPath "' + Report + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Exit;
+
+  { 0 means: we installed RTSS and nothing else appears to use it. Every other code
+    means leave it alone, so there is nothing worth troubling the user about. }
+  if ResultCode <> 0 then
+    Exit;
+  if not LoadStringFromFile(Report, Text) then
+    Exit;
+
+  if MsgBox(String(Text) + #13#10 + #13#10 +
+            'Remove RivaTuner Statistics Server as well?' + #13#10 + #13#10 +
+            'Choose No to keep it - you can always remove it yourself later from' + #13#10 +
+            'Settings > Apps.',
+            mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+  begin
+    Uninst := ExpandConstant('{commonpf32}\RivaTuner Statistics Server\Uninstall.exe');
+    if not FileExists(Uninst) then
+      Uninst := ExpandConstant('{commonpf}\RivaTuner Statistics Server\Uninstall.exe');
+    if FileExists(Uninst) then
+      { /S is an NSIS silent uninstall. Without it this opens a language dialog that
+        looks exactly like an installer, which is alarming mid-uninstall. It may also
+        ask for a reboot to finish, because its hook DLL can still be loaded. }
+      Exec(Uninst, '/S', '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataPath: String;
 begin
+  if CurUninstallStep = usUninstall then
+    OfferRtssRemoval();
+
   if CurUninstallStep = usPostUninstall then
   begin
     DataPath := ExpandConstant('{#DataDir}');
@@ -237,7 +335,8 @@ begin
                 mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
         DelTree(DataPath, True, True, True);
     end;
-    { RTSS is a separate product with its own uninstaller, and the user may be using
-      it for other things, so it is deliberately left alone. }
+    { RTSS was handled during usUninstall by OfferRtssRemoval, while our files - and so
+      the checker script - still existed. It is only ever offered, never removed
+      silently: it is a separate product and the choice belongs to the user. }
   end;
 end;

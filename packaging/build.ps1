@@ -49,7 +49,8 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 # Files
 foreach ($f in @("config.default.toml", "hw-sentinel.cmd", "install.ps1",
-                 "install-rtss.ps1", "README.md", "LICENSE", "INSTALL-MANIFEST.md")) {
+                 "install-rtss.ps1", "rtss-check.ps1",
+                 "README.md", "LICENSE", "INSTALL-MANIFEST.md")) {
     Copy-Item (Join-Path $Root $f) $Stage
 }
 
@@ -75,8 +76,13 @@ Get-ChildItem $Stage -Recurse -Include "__pycache__" -Directory -ErrorAction Sil
 
 # --- licence guard -------------------------------------------------------------
 Step "licence guard"
+# Match RTSS's actual binaries, not merely names beginning with "rtss" - our own
+# rtss-check.ps1 and install-rtss.ps1 are ours to ship and must not trip this.
 $forbidden = @(Get-ChildItem $Stage -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match '^(RTSS|RTSSHooks|EncoderServer)' -or $_.FullName -match '\\rtss\\' })
+    Where-Object {
+        $_.Name -match '^(RTSS|RTSSHooks\w*|EncoderServer\w*)\.(exe|dll)$' -or
+        $_.FullName -match '\\runtime\\rtss\\'
+    })
 if ($forbidden) {
     $forbidden | ForEach-Object { Write-Host "   $($_.FullName)" -ForegroundColor Red }
     throw "RTSS files reached the staging tree. It is proprietary freeware and MUST NOT be redistributed."
