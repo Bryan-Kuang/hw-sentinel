@@ -228,12 +228,22 @@ class RuleEngine:
         value_s = f"{st.last_value:.{dp}f}{unit}"
 
         breached = st.last_value > rule.value if rule.op == ">" else st.last_value < rule.value
+        under_clear = (
+            st.last_value <= rule.clear_at if rule.op == ">" else st.last_value >= rule.clear_at
+        )
+        clear_s = f"{rule.clear_at:.{dp}f}{unit}"
+
         if breached:
             arrow = "over" if rule.op == ">" else "under"
             detail = f"{rule.label} {value_s} · {arrow} {rule.value:.{dp}f}{unit} for {held}s"
+        elif not under_clear:
+            # Between the clear point and the trip point. The alert deliberately stays
+            # up here — that gap is what stops a value hovering on the threshold from
+            # flashing the card on and off. Say so, and say what will dismiss it:
+            # reporting "recovered" while refusing to disappear reads as a bug.
+            side = "below" if rule.op == ">" else "above"
+            detail = f"{rule.label} {value_s} · settling, clears {side} {clear_s}"
         else:
-            # Reached on the way out. Saying "over 88°C" while showing 60.5°C reads as
-            # a contradiction, so describe the recovery instead.
             detail = f"{rule.label} {value_s} · recovered after {held}s"
         return Alert(
             key=rule.key,
