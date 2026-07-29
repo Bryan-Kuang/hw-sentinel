@@ -207,7 +207,14 @@ class RuleEngine:
                 events.append(Event(EventKind.UPDATE, self._alert(st, now)))
 
         elif st.state is State.CLEARING:
-            if not under_clear:
+            # Only a genuine re-breach of the trip point restarts the alert. Requiring
+            # the value to stay under clear_at *continuously* looks reasonable but is
+            # defeated by any sensor that moves faster than clear_dwell: a GPU voltage
+            # rail wobbles across the clear point several times a second, so the
+            # countdown reset forever and the alert only ever cleared when the card
+            # went idle - minutes later. Reaching clear_at still starts the recovery;
+            # noise on the way down no longer cancels it.
+            if over:
                 st.state, st.since = State.TRIPPED, now
                 events.append(Event(EventKind.UPDATE, self._alert(st, now)))
             elif (now - st.since) >= rule.clear_dwell:

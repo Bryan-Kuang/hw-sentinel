@@ -19,7 +19,7 @@ Built for a **Ryzen 7 9800X3D + Radeon RX 9070 XT**, but the rules are just conf
 | GPU hot spot (junction) | **critical** | > 100 °C | 92 °C | 10 s |
 | GPU core (edge) | warn | > 90 °C | 84 °C | 10 s |
 | GPU hot spot − edge delta | warn | > 25 °C | 20 °C | 30 s |
-| GPU core voltage | warn | > 1.15 V | 1.10 V | 5 s |
+| GPU core voltage | warn | > 1.25 V | 1.20 V | 5 s |
 
 Every number lives in `config.toml`.
 
@@ -191,8 +191,7 @@ hwsentinel/
   sink_rtss.py    RTSS shared-memory OSD writer
   sink_sound.py   winsound alerts, rate-limited
   sink_log.py     JSONL event log
-config.toml       thresholds and sensor aliases
-config.toml       thresholds and sensor aliases
+config.default.toml  shipped template; copied to your data folder on first run
 generate_assets.py  writes assets/warn.wav and assets/critical.wav
 runtime/          private Python + LHM + RTSS (built by bootstrap.ps1)
 state/            events.jsonl

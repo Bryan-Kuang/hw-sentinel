@@ -185,9 +185,15 @@ clear_dwell = 30
 cooldown    = 300
 severity    = "warn"
 
-# Set just above the card's normal ceiling. Measured on an RX 9070 XT: idle
-# 0.36-0.66 V, gaming peak 1.11 V. Too low and it fires during ordinary play; too
-# high and it can never fire at all. Check your own peak before changing it.
+# An overclock guard, not a fault detector. A stock card regulates this rail itself,
+# so no threshold catches a real problem: measured on an RX 9070 XT the normal range
+# runs 0.03-1.17 V, so anything below ~1.17 V alerts on the card working correctly,
+# and anything above it never fires on stock hardware. Set beyond stock behaviour, so
+# it stays quiet unless something - realistically a manual overclock - pushes the rail
+# well past normal.
+#
+# Check your own card's maximum before trusting this number. LibreHardwareMonitor
+# records a Max per sensor, which is the honest place to start.
 [rules.gpu_core_voltage]
 enabled     = true
 title       = "GPU core voltage high"
@@ -195,8 +201,8 @@ label       = "GPU V"
 sensor      = "gpu_core_volts"
 unit        = "V"
 op          = ">"
-value       = 1.15
-clear_at    = 1.10
+value       = 1.25
+clear_at    = 1.20
 dwell       = 5
 clear_dwell = 10
 cooldown    = 120

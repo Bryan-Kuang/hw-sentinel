@@ -138,6 +138,30 @@ check("re-trips after cooldown", len(eng.active) == 1)
 eng.snooze("t", 5)
 check("snooze clears", any(k is EventKind.CLEAR for k in kinds(eng.update(reading(95.0), t + 130))))
 
+# A noisy sensor must still clear. GPU voltage wobbles across the clear point several
+# times a second; requiring an unbroken run below it meant the countdown reset forever
+# and the alert only ended when the card went idle, minutes later.
+eng_noise = RuleEngine(mk_cfg(value=1.15, clear_at=1.10, dwell=5, clear_dwell=10, unit="V"))
+t2 = 5000.0
+seq = [1.161] * 6 + [1.05, 1.12, 1.02, 1.13, 0.98, 1.11] * 8
+cleared_at = None
+for i, v in enumerate(seq):
+    for e in eng_noise.update(reading(v), t2 + i):
+        if e.kind is EventKind.CLEAR and cleared_at is None:
+            cleared_at = i
+check("noisy sensor clears once recovered", cleared_at is not None and cleared_at <= 20, cleared_at)
+
+# ...but a real re-breach of the trip point still restarts the alert.
+eng_re = RuleEngine(mk_cfg(value=1.15, clear_at=1.10, dwell=5, clear_dwell=10, unit="V"))
+t3 = 6000.0
+seq = [1.161] * 6 + [0.9] * 6 + [1.20] * 8 + [0.9] * 20
+cleared_at = None
+for i, v in enumerate(seq):
+    for e in eng_re.update(reading(v), t3 + i):
+        if e.kind is EventKind.CLEAR and cleared_at is None:
+            cleared_at = i
+check("re-breach restarts the alert", cleared_at is not None and cleared_at > 20, cleared_at)
+
 # Derived expression rule.
 eng2 = RuleEngine(Config(
     data_root=Path("."),
