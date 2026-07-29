@@ -1,0 +1,41 @@
+<Configuration>
+  <!--
+    Disposable environment for testing the installer.
+
+    Launch with:
+        WindowsSandbox.exe sandbox\hw-sentinel-tests.wsb
+
+    Everything inside is destroyed when the window closes. Only one folder is
+    writable from in here - sandbox\results - and it exists purely so the test
+    report can be read back on the host. The installer and the scripts are mapped
+    read-only, so nothing running inside can alter what is being tested.
+  -->
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\workspace\hw-sentinel\dist</HostFolder>
+      <SandboxFolder>C:\sandbox\dist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\workspace\hw-sentinel\sandbox\scripts</HostFolder>
+      <SandboxFolder>C:\sandbox\scripts</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\workspace\hw-sentinel\sandbox\results</HostFolder>
+      <SandboxFolder>C:\sandbox\results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\sandbox\scripts\run-tests.ps1</Command>
+  </LogonCommand>
+
+  <!-- Needed only if a test exercises the RTSS download. -->
+  <Networking>Enable</Networking>
+  <MemoryInMB>4096</MemoryInMB>
+  <!-- No GPU passthrough: there is no real graphics card to expose, and enabling
+       it only adds surface area for something we cannot test in here anyway. -->
+  <vGPU>Disable</vGPU>
+</Configuration>

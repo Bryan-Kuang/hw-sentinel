@@ -23,3 +23,7 @@ assets/*.wav
 # Python
 __pycache__/
 *.py[cod]
+
+# Sandbox test output
+sandbox/results/*
+!sandbox/results/.gitkeep
