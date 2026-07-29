@@ -234,24 +234,31 @@ class RuleEngine:
         dp = decimals_for(unit)
         value_s = f"{st.last_value:.{dp}f}{unit}"
 
+        # Three states, three messages. Describing the alert by its current reading alone
+        # is what produced "recovered" on a card that would not go away: the reading and
+        # the state are different things once hysteresis and dwell are involved.
         breached = st.last_value > rule.value if rule.op == ">" else st.last_value < rule.value
-        under_clear = (
-            st.last_value <= rule.clear_at if rule.op == ">" else st.last_value >= rule.clear_at
-        )
         clear_s = f"{rule.clear_at:.{dp}f}{unit}"
 
-        if breached:
+        if st.state is State.OK:
+            # The terminal message on a CLEAR event: the state has already been reset by
+            # the time the event is built, so without this the alert signs off with the
+            # condition it no longer meets.
+            detail = f"{rule.label} {value_s} · recovered after {held}s"
+        elif st.state is State.CLEARING:
+            # Recovery is already counting down, and brief noise back over the clear
+            # point will not cancel it, so promise the dismissal rather than a condition.
+            remaining = max(0, int(rule.clear_dwell - (now - st.since)))
+            detail = f"{rule.label} {value_s} · recovered, clearing in {remaining}s"
+        elif breached:
             arrow = "over" if rule.op == ">" else "under"
             detail = f"{rule.label} {value_s} · {arrow} {rule.value:.{dp}f}{unit} for {held}s"
-        elif not under_clear:
-            # Between the clear point and the trip point. The alert deliberately stays
-            # up here — that gap is what stops a value hovering on the threshold from
-            # flashing the card on and off. Say so, and say what will dismiss it:
-            # reporting "recovered" while refusing to disappear reads as a bug.
-            side = "below" if rule.op == ">" else "above"
-            detail = f"{rule.label} {value_s} · settling, clears {side} {clear_s}"
         else:
-            detail = f"{rule.label} {value_s} · recovered after {held}s"
+            # Below the trip point but not yet down to the clear point. Staying up is
+            # deliberate - that gap stops a value hovering on the threshold from
+            # flashing the card on and off - so say plainly what is still needed.
+            side = "above" if rule.op == ">" else "below"
+            detail = f"{rule.label} {value_s} · still {side} {clear_s}"
         return Alert(
             key=rule.key,
             title=rule.title,
