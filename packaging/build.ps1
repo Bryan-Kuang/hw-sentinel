@@ -59,10 +59,17 @@ $pkg = Join-Path $Stage "hwsentinel"
 New-Item -ItemType Directory -Force -Path $pkg | Out-Null
 Get-ChildItem (Join-Path $Root "hwsentinel") -Filter "*.py" -File | Copy-Item -Destination $pkg
 
-# Alert sounds
+# Generated assets: alert sounds and tray icons. Copy everything rather than listing
+# extensions - an earlier version copied only *.wav, which silently shipped an installer
+# whose tray icon could never load.
 $assets = Join-Path $Stage "assets"
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
-Get-ChildItem (Join-Path $Root "assets") -Filter "*.wav" -File | Copy-Item -Destination $assets
+Get-ChildItem (Join-Path $Root "assets") -File | Copy-Item -Destination $assets
+foreach ($required in @("warn.wav", "critical.wav", "idle.ico", "alert.ico")) {
+    if (-not (Test-Path (Join-Path $assets $required))) {
+        throw "asset missing from the payload: $required (run generate_assets.py)"
+    }
+}
 
 # Redistributable dependencies ONLY. runtime\rtss is deliberately absent.
 foreach ($d in @("python", "lhm")) {

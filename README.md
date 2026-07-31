@@ -163,6 +163,28 @@ Each rule is a state machine with four knobs:
 
 Click any card to snooze that one rule for `card.snooze_minutes`.
 
+## The tray icon
+
+hw-sentinel puts an icon in the notification area, so it is something you can see and
+control rather than an invisible background process. Right-click it for:
+
+- **Pause / resume monitoring** — stops alerts appearing without stopping the watching;
+  readings are still polled and events still logged
+- **Snooze all alerts for 15 minutes**
+- **Edit alert thresholds** — opens your `config.toml`
+- **Open event log**, **Check setup**, **Quit**
+
+The icon turns from grey to clay while an alert is active, and its tooltip names it.
+
+> **Windows 11 hides new tray icons by default.** After installing, click the `^` chevron
+> in the notification area and drag the hw-sentinel icon out onto the taskbar — otherwise
+> it stays in the overflow. Nothing we can set from code changes that; it is the user's
+> choice by design.
+
+LibreHardwareMonitor and RTSS have tray icons of their own and there is no supported way
+to suppress another program's icon. You can hide them individually under **Settings →
+Personalisation → Taskbar → Other system tray icons**.
+
 ## Where alerts appear
 
 | Situation | What you get |

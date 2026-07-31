@@ -189,12 +189,17 @@ if (Test-Path $cfgWorking) {
     throw "missing $cfgTemplate"
 }
 
-# --- alert sounds ---------------------------------------------------------------
-Step "generating alert sounds"
+# --- generated assets -------------------------------------------------------------
+Step "generating alert sounds and tray icons"
 $python = Join-Path $PyDir "python.exe"
-if (Test-Path (Join-Path $Root "assets\warn.wav")) {
-    Info "already present, skipping"
+# Check every asset, not just one: an existing checkout has the sounds but not the
+# icons, and testing a single file would skip generation and leave the tray blank.
+$assets = @("warn.wav", "critical.wav", "idle.ico", "alert.ico")
+$missing = @($assets | Where-Object { -not (Test-Path (Join-Path $Root "assets\$_")) })
+if ($missing.Count -eq 0) {
+    Info "all present, skipping"
 } else {
+    Info "missing: $($missing -join ', ')"
     & $python (Join-Path $Root "generate_assets.py")
     if ($LASTEXITCODE -ne 0) { throw "generate_assets.py failed" }
 }

@@ -121,6 +121,20 @@ class LogCfg:
 
 
 @dataclass
+class TrayCfg:
+    """The notification-area icon.
+
+    Without it the tray shows LibreHardwareMonitor and RTSS but nothing for
+    hw-sentinel itself, leaving no obvious way to pause or quit it.
+    """
+
+    enabled: bool = True
+    idle_icon: str = "assets/idle.ico"
+    alert_icon: str = "assets/alert.ico"
+    snooze_minutes: int = 15
+
+
+@dataclass
 class DepsCfg:
     """Launching LibreHardwareMonitor and RTSS ourselves.
 
@@ -167,6 +181,7 @@ class Config:
     sound: SoundCfg = field(default_factory=SoundCfg)
     log: LogCfg = field(default_factory=LogCfg)
     deps: DepsCfg = field(default_factory=DepsCfg)
+    tray: TrayCfg = field(default_factory=TrayCfg)
     sensors: dict[str, str] = field(default_factory=dict)
     rules: list[RuleCfg] = field(default_factory=list)
 
@@ -210,7 +225,10 @@ def load(path: str | Path) -> Config:
     if not path.exists():
         raise ConfigError(f"config file not found: {path}")
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig, not utf-8: Notepad and several PowerShell cmdlets write a UTF-8
+        # byte-order mark, and tomllib rejects it with "Invalid statement at line 1,
+        # column 1" - which tells a user who just edited a threshold nothing at all.
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
@@ -222,6 +240,7 @@ def load(path: str | Path) -> Config:
         sound=_build(SoundCfg, _section(raw, "sound"), "sound"),
         log=_build(LogCfg, _section(raw, "log"), "log"),
         deps=_build(DepsCfg, _section(raw, "deps"), "deps"),
+        tray=_build(TrayCfg, _section(raw, "tray"), "tray"),
         sensors=dict(_section(raw, "sensors")),
     )
 

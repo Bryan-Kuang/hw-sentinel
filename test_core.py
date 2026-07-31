@@ -184,6 +184,18 @@ check("missing sensor recorded", eng3.update(R, 3000.0) == [] and "t" in eng3.er
 # --- path split -------------------------------------------------------------------
 check_paths()
 
+# A config saved by Notepad carries a UTF-8 BOM; tomllib rejects it outright, so the
+# loader has to strip it or a user who edits a threshold gets a parse error instead.
+import tempfile
+_bom = Path(tempfile.gettempdir()) / "hwsentinel-bom-test.toml"
+_bom.write_bytes(b"\xef\xbb\xbf" + Path(r"D:\workspace\hw-sentinel\config.default.toml").read_bytes())
+try:
+    check("config with a UTF-8 BOM still loads", bool(load(_bom).enabled_rules))
+except Exception as exc:  # noqa: BLE001 - the point is that nothing escapes
+    check("config with a UTF-8 BOM still loads", False, exc)
+finally:
+    _bom.unlink(missing_ok=True)
+
 # --- config validation ----------------------------------------------------------
 check("real config.toml loads", bool(load(Path(__file__).resolve().parent / "config.toml").enabled_rules))
 for bad, why in [
