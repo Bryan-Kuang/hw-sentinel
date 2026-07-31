@@ -1,0 +1,31 @@
+<Configuration>
+  <!--
+    A clean, disposable Windows with the installer available - and nothing automated.
+
+    Launch by double-clicking this file, or:
+        WindowsSandbox.exe sandbox\manual.wsb
+
+    There is no LogonCommand, so nothing runs by itself and nothing sends keystrokes.
+    You drive the wizard yourself. Close the window and everything inside is destroyed.
+
+    The installer is mapped read-only, so nothing you do in there can alter it.
+    sandbox\results is writable if you want to drag anything back out - screenshots,
+    for instance.
+  -->
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\workspace\hw-sentinel\dist</HostFolder>
+      <SandboxFolder>C:\sandbox\dist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\workspace\hw-sentinel\sandbox\results</HostFolder>
+      <SandboxFolder>C:\sandbox\results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+
+  <Networking>Enable</Networking>
+  <MemoryInMB>4096</MemoryInMB>
+  <vGPU>Disable</vGPU>
+</Configuration>
