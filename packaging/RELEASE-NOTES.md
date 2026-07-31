@@ -9,7 +9,7 @@ Download **hw-sentinel-setup-1.1.0.exe** and run it.
 > warning properly needs a paid code-signing certificate. Verify the checksum below
 > if you would rather check first.
 >
-> `SHA-256: 25A8D56C3C27A0849B88E6C6981C566B2B155F0C6ECFA98E47D7175D734B1D58`
+> `SHA-256: A7155AB0FF957810E06EB81C84BAD83F6C4C1A085FAE42D01C56396DD971CFEC`
 
 After installing, run **Check hw-sentinel setup** from the Start menu. Sensor names
 differ between machines, and it tells you if any rule needs its sensor corrected.
@@ -21,11 +21,6 @@ removes every file, the scheduled task, and - if you want - your settings. Insta
 over an existing copy asks first, and offers either to upgrade in place or to install
 to a different folder and delete the old one. Whatever folder you choose, it always
 installs into a subfolder of its own.
-
-**A tray icon.** hw-sentinel now appears in the notification area, so you can pause it,
-snooze alerts, open your settings or quit it without hunting through Task Manager. The
-icon changes colour while an alert is active. Windows 11 hides new tray icons by
-default - click the `^` chevron and drag it out onto the taskbar.
 
 **One autostart entry instead of three.** hw-sentinel now launches
 LibreHardwareMonitor and RTSS itself. They inherit its elevated token, so

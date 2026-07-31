@@ -188,7 +188,7 @@ check_paths()
 # loader has to strip it or a user who edits a threshold gets a parse error instead.
 import tempfile
 _bom = Path(tempfile.gettempdir()) / "hwsentinel-bom-test.toml"
-_bom.write_bytes(b"\xef\xbb\xbf" + Path(r"D:\workspace\hw-sentinel\config.default.toml").read_bytes())
+_bom.write_bytes(b"\xef\xbb\xbf" + (Path(__file__).resolve().parent / "config.default.toml").read_bytes())
 try:
     check("config with a UTF-8 BOM still loads", bool(load(_bom).enabled_rules))
 except Exception as exc:  # noqa: BLE001 - the point is that nothing escapes

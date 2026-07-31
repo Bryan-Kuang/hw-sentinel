@@ -62,15 +62,6 @@ critical_wav = "assets/critical.wav"
 enabled = true
 path = "events.jsonl"       # relative to the folder holding this file
 
-[tray]
-# The notification-area icon. Without it the tray shows LibreHardwareMonitor and RTSS
-# but nothing for hw-sentinel itself, leaving no obvious way to pause or quit it.
-# Right-click it for pause, snooze, settings, the event log and quit.
-enabled = true
-idle_icon = "assets/idle.ico"
-alert_icon = "assets/alert.ico"
-snooze_minutes = 15
-
 [deps]
 # Launch LibreHardwareMonitor and RTSS as child processes, so only hw-sentinel needs
 # an autostart entry. Children inherit its elevated token, which is how LHM gets the

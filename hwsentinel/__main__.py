@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import os
 import queue
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -23,7 +21,6 @@ from .sink_log import LogSink
 from .sink_rtss import RtssSink
 from .sink_sound import SoundSink
 from .source_lhm import LhmSource, SourceError, grouped
-from .tray import TrayIcon
 
 
 
@@ -71,17 +68,14 @@ def rtss_text(alerts: list[Alert], markup: bool) -> str:
 class Supervisor:
     """Owns the poll thread and fans events out to the sinks on the tk thread."""
 
-    def __init__(self, cfg: Config, cfg_path: str = "") -> None:
+    def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.cfg_path = cfg_path or str(cfg.data_root / "config.toml")
         self.source = LhmSource(cfg.source.url, cfg.source.timeout)
         self.engine = RuleEngine(cfg)
         self.sound = SoundSink(cfg)
         self.log = LogSink(cfg)
         self.rtss = RtssSink(cfg.rtss)
         self.deps = DepSupervisor(cfg)
-        self.tray: TrayIcon | None = None
-        self.paused = False
         self.queue: queue.Queue = queue.Queue()
         self.stop = threading.Event()
         self.source_error = ""
@@ -139,62 +133,8 @@ class Supervisor:
             pass
 
         if alerts is not None:
-            # Paused means show nothing, but keep polling and keep logging - the point
-            # is to stop being interrupted, not to stop watching.
-            self._render([] if self.paused else alerts)
-            if self.tray:
-                summary = alerts[0].title if alerts else ""
-                self.tray.update(len(alerts), self.paused, summary)
-
-        self._drain_tray()
+            self._render(alerts)
         self.root.after(100, self.pump)
-
-    def _drain_tray(self) -> None:
-        if not self.tray:
-            return
-        try:
-            while True:
-                cmd = self.tray.commands.get_nowait()
-                self._on_tray_command(cmd)
-        except queue.Empty:
-            pass
-
-    def _on_tray_command(self, cmd: str) -> None:
-        if cmd == "toggle-pause":
-            self.paused = not self.paused
-            say(f"[tray] monitoring {'paused' if self.paused else 'resumed'}")
-            if self.paused:
-                self.cards.update([])
-                self.rtss.clear()
-        elif cmd == "snooze-all":
-            minutes = self.cfg.tray.snooze_minutes
-            for key in self.engine.states:
-                self.engine.snooze(key, minutes)
-            self.cards.update([])
-            self.rtss.clear()
-            say(f"[tray] all rules snoozed for {minutes} min")
-        elif cmd == "settings":
-            self._open(Path(self.cfg_path))
-        elif cmd == "log":
-            path = self.log.path
-            if not path.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("", encoding="utf-8")   # nothing to show yet is still an answer
-            self._open(path)
-        elif cmd == "doctor":
-            launcher = self.cfg.program_root / "hw-sentinel.cmd"
-            if launcher.exists():
-                subprocess.Popen(["cmd", "/c", "start", "", str(launcher), "doctor"], shell=False)
-        elif cmd == "exit":
-            say("[tray] quit requested")
-            self.stop.set()
-
-    @staticmethod
-    def _open(path: Path) -> None:
-        try:
-            os.startfile(str(path))          # whatever the user has associated
-        except OSError:
-            subprocess.Popen(["notepad.exe", str(path)])
 
     def _on_event(self, event: Event) -> None:
         self.log.write(event)
@@ -227,8 +167,6 @@ class Supervisor:
         except OSError:
             pass
         self.deps.stop()
-        if self.tray:
-            self.tray.stop()
         self.cards.destroy_all()
         try:
             self.root.destroy()
@@ -248,18 +186,6 @@ class Supervisor:
         # Dependencies first, and only then the poll thread. Starting the thread first
         # raced: it polled before LibreHardwareMonitor existed, hit the failure path,
         # and launched LHM — while this thread was launching it too. Two copies.
-        if self.cfg.tray.enabled:
-            self.tray = TrayIcon(
-                self.cfg.resolve_program(self.cfg.tray.idle_icon),
-                self.cfg.resolve_program(self.cfg.tray.alert_icon),
-            )
-            if self.tray.start():
-                say("tray icon ready")
-            else:
-                # Losing the icon must not cost you the monitoring.
-                say(f"tray icon unavailable: {self.tray.last_error or 'unknown'}")
-                self.tray = None
-
         say(f"{APP_NAME} {__version__} starting — bringing up dependencies...")
         for st in self.deps.start().values():
             say(f"  {st.name}: {st.describe()}")
@@ -396,7 +322,7 @@ def cmd_test(cfg: Config, args) -> int:
         say(f"unknown rule '{args.rule}'. Available: " + ", ".join(r.key for r in cfg.rules))
         return 1
 
-    sup = Supervisor(cfg, args.config)
+    sup = Supervisor(cfg)
     started = time.time()
     # Overshoot proportionally: a fixed offset reads as nonsense on a voltage rule
     # (1.30 V + 2 = 3.3 V), where 5% past the threshold looks like a real reading.
@@ -435,7 +361,7 @@ def cmd_test(cfg: Config, args) -> int:
 
 
 def cmd_run(cfg: Config, args) -> int:
-    return Supervisor(cfg, args.config).run()
+    return Supervisor(cfg).run()
 
 
 def main(argv: list[str] | None = None) -> int:
