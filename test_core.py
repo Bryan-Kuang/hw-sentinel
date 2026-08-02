@@ -196,6 +196,21 @@ except Exception as exc:  # noqa: BLE001 - the point is that nothing escapes
 finally:
     _bom.unlink(missing_ok=True)
 
+# --- single instance ---------------------------------------------------------------
+from hwsentinel.instance import SingleInstance, another_instance_running
+
+_first = SingleInstance("hwsentinel-selftest")
+check("first instance acquires the claim", _first.acquire())
+_second = SingleInstance("hwsentinel-selftest")
+check("second instance is refused", not _second.acquire())
+check("and knows why", _second.already_running)
+check("probe sees the running instance", another_instance_running("hwsentinel-selftest"))
+_first.release()
+_third = SingleInstance("hwsentinel-selftest")
+check("claim is free again once released", _third.acquire())
+_third.release()
+check("probe sees nothing once released", not another_instance_running("hwsentinel-selftest"))
+
 # --- config validation ----------------------------------------------------------
 check("real config.toml loads", bool(load(Path(__file__).resolve().parent / "config.toml").enabled_rules))
 for bad, why in [

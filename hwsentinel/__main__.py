@@ -15,6 +15,7 @@ from pathlib import Path
 from . import APP_NAME, __version__
 from .config import Config, ConfigError, ensure_config, load
 from .deps import DepSupervisor
+from .instance import SingleInstance, another_instance_running
 from .rules import Alert, Event, EventKind, RuleEngine, expr_aliases
 from .sink_card import ACCENT, CardManager
 from .sink_log import LogSink
@@ -243,6 +244,11 @@ def cmd_doctor(cfg: Config, args) -> int:
     say("[1/6] Dependencies")
     deps = DepSupervisor(cfg)
     say(f"      deps.manage = {str(cfg.deps.manage).lower()}")
+    # A second monitor is invisible until alerts start arriving twice, so surface it
+    # here rather than leaving it to be discovered during an incident.
+    if another_instance_running():
+        say("      NOTE  a monitor is already running (this is expected if the "
+            "scheduled task is active)")
     for which, label in (("lhm", "LibreHardwareMonitor"), ("rtss", "RTSS")):
         found = deps.find(which)
         alive = deps.lhm_alive() if which == "lhm" else deps.rtss_alive()
@@ -361,7 +367,19 @@ def cmd_test(cfg: Config, args) -> int:
 
 
 def cmd_run(cfg: Config, args) -> int:
-    return Supervisor(cfg).run()
+    # Two monitors means two cards, two sounds, and two clients fighting over the same
+    # RTSS slot. Only `run` is guarded - doctor, discover and test are meant to stay
+    # usable while the real monitor is going.
+    guard = SingleInstance()
+    if not guard.acquire():
+        say("hw-sentinel is already running in this session.")
+        say("Only one monitor can run at a time, or every alert would appear twice.")
+        say("Stop the other copy first - or let the scheduled task manage it.")
+        return 3
+    try:
+        return Supervisor(cfg).run()
+    finally:
+        guard.release()
 
 
 def main(argv: list[str] | None = None) -> int:

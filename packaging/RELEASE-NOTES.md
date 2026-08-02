@@ -9,7 +9,7 @@ Download **hw-sentinel-setup-1.1.0.exe** and run it.
 > warning properly needs a paid code-signing certificate. Verify the checksum below
 > if you would rather check first.
 >
-> `SHA-256: A7155AB0FF957810E06EB81C84BAD83F6C4C1A085FAE42D01C56396DD971CFEC`
+> `SHA-256: 8A29D74090C211D6086097FD7095DACD691C8C0EA96ADAB50537086D61B02FFF`
 
 After installing, run **Check hw-sentinel setup** from the Start menu. Sensor names
 differ between machines, and it tells you if any rule needs its sensor corrected.
@@ -50,6 +50,8 @@ leaving behind a program you never chose. It always defaults to keeping it.
 - RTSS is found wherever it was installed, not only in the default folder.
 - Fixed a startup race that could launch two copies of LibreHardwareMonitor, and a
   liveness check that could never report RTSS as stopped.
+- Two monitors can no longer run at once. Nothing prevented it, so a copy left
+  running from elsewhere produced two cards and two sounds for every alert.
 - A config file saved with a byte-order mark - what Notepad writes - no longer fails
   to load.
 
